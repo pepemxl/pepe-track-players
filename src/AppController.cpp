@@ -7,6 +7,7 @@
 #include "TagsModel.h"
 #include "TracksModel.h"
 #include "TrackingManager.h"
+#include "MatchManager.h"
 #include "VideoEngine.h"
 
 #include <QDir>
@@ -30,6 +31,7 @@ AppController::AppController(QObject *parent)
     m_homography    = new HomographyManager(this);
     m_tracking      = new TrackingManager(this);
     m_tracksModel   = new TracksModel(this);
+    m_match         = new MatchManager(this);
 
     // Seed rosters so the app is usable before any project exists.
     m_homeRoster->setPlayers({
@@ -87,6 +89,7 @@ QObject *AppController::tagsObj() const       { return m_tags; }
 QObject *AppController::homographyObj() const { return m_homography; }
 QObject *AppController::trackingObj() const   { return m_tracking; }
 QObject *AppController::tracksModelObj() const { return m_tracksModel; }
+QObject *AppController::matchObj() const      { return m_match; }
 
 void AppController::openVideo(const QUrl &url)
 {
@@ -216,6 +219,7 @@ void AppController::onVideoInfo(int width, int height, int totalFrames, double f
     m_durationSec = fps > 0.0 ? totalFrames / fps : 0.0;
     m_videoLoaded = true;
     m_homography->setImageSize(width, height);
+    m_match->setVideo(m_videoPath, fps, totalFrames);
     emit videoStateChanged();
 }
 

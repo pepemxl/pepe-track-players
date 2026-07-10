@@ -41,4 +41,22 @@ QtObject {
     function teamColor(team) {
         return team === 0 ? homeColor : awayColor
     }
+
+    // Frame-marker types used by the video ops panel and scrubber ticks.
+    readonly property var markerTypes: [
+        { type: "match_start",      label: "Match start", tint: "#30d980" },
+        { type: "match_end",        label: "Match end",   tint: "#e35449" },
+        { type: "lineup_a",         label: "Lineup A",    tint: "#4757d8" },
+        { type: "lineup_b",         label: "Lineup B",    tint: "#dd7a41" },
+        { type: "bench_a",          label: "Bench A",     tint: "#6b77c9" },
+        { type: "bench_b",          label: "Bench B",     tint: "#c9976b" },
+        { type: "commercial_start", label: "Comm. start", tint: "#e0ac37" },
+        { type: "commercial_end",   label: "Comm. end",   tint: "#e0ac37" },
+    ]
+
+    function markerInfo(type) {
+        for (const m of markerTypes)
+            if (m.type === type) return m
+        return { type: type, label: type, tint: "#8b93a1" }
+    }
 }

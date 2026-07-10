@@ -13,6 +13,7 @@ class TagsModel;
 class HomographyManager;
 class TrackingManager;
 class TracksModel;
+class MatchManager;
 
 // Facade the QML layer talks to. Owns the video worker, the models and
 // the managers; forwards frames into the image provider.
@@ -40,6 +41,7 @@ class AppController : public QObject
     Q_PROPERTY(QObject *homography READ homographyObj CONSTANT)
     Q_PROPERTY(QObject *tracking READ trackingObj CONSTANT)
     Q_PROPERTY(QObject *tracksModel READ tracksModelObj CONSTANT)
+    Q_PROPERTY(QObject *match READ matchObj CONSTANT)
 
 public:
     explicit AppController(QObject *parent = nullptr);
@@ -68,6 +70,7 @@ public:
     QObject *homographyObj() const;
     QObject *trackingObj() const;
     QObject *tracksModelObj() const;
+    QObject *matchObj() const;
 
     Q_INVOKABLE void openVideo(const QUrl &url);
     Q_INVOKABLE void togglePlay();
@@ -106,6 +109,7 @@ private:
     HomographyManager *m_homography{nullptr};
     TrackingManager   *m_tracking{nullptr};
     TracksModel       *m_tracksModel{nullptr};
+    MatchManager      *m_match{nullptr};
 
     bool    m_videoLoaded{false};
     QString m_videoPath;

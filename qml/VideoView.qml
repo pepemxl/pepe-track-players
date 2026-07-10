@@ -9,9 +9,15 @@ Item {
     Row {
         anchors.fill: parent
 
+        // ---- collapsible video-ops panel ----
+        VideoOpsPanel {
+            id: opsPanel
+            height: parent.height
+        }
+
         // ---- left column: video + transport + quality strip ----
         Item {
-            width: parent.width - rightRail.width
+            width: parent.width - rightRail.width - opsPanel.width
             height: parent.height
 
             Column {
@@ -171,6 +177,20 @@ Item {
                                 radius: 3
                                 color: Theme.green
                             }
+
+                            // Frame-marker ticks
+                            Repeater {
+                                model: App.match.markers
+                                delegate: Rectangle {
+                                    required property var modelData
+                                    x: (App.totalFrames > 1
+                                        ? track.width * modelData.frame / (App.totalFrames - 1) : 0) - 1
+                                    y: -4
+                                    width: 2; height: 14
+                                    color: Theme.markerInfo(modelData.type).tint
+                                }
+                            }
+
                             Rectangle {
                                 x: (App.totalFrames > 1
                                     ? track.width * App.currentFrame / (App.totalFrames - 1) : 0) - 6

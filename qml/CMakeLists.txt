@@ -17,6 +17,7 @@ qt_add_qml_module(pepetrack_qml
         NavItem.qml
         VideoSurface.qml
         PlayerDropdown.qml
+        VideoOpsPanel.qml
         VideoView.qml
         HomographyView.qml
         MetadataView.qml

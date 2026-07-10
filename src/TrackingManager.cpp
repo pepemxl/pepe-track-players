@@ -1,104 +1,17 @@
 #include "TrackingManager.h"
+#include "YoloDetector.h"
 
 #include <opencv2/opencv.hpp>
-#include <opencv2/dnn.hpp>
 
-#include <QCoreApplication>
 #include <QElapsedTimer>
-#include <QFile>
-#include <QFileInfo>
 #include <algorithm>
 #include <vector>
 
 namespace {
 
 constexpr int    kStride       = 5;     // run the detector every N frames
-constexpr int    kInputSize    = 640;   // YOLO letterbox input
-constexpr float  kConfThresh   = 0.35f;
-constexpr float  kNmsThresh    = 0.45f;
 constexpr double kLowConf      = 0.5;   // below this a detection is "low confidence"
 constexpr double kIouMatch     = 0.2;
-
-// Same model as videopp's player tools (COCO detection, person = class 0).
-QString resolveModelPath()
-{
-    const QString appDir = QCoreApplication::applicationDirPath();
-    const QStringList candidates = {
-        appDir + QStringLiteral("/models/yolov8n.onnx"),
-        appDir + QStringLiteral("/../../models/yolov8n.onnx"),
-        QStringLiteral("models/yolov8n.onnx"),
-        QStringLiteral("D:/SANDBOX/videopp/LOCAL_DATA/models/yolov8n.onnx"),
-    };
-    for (const QString &c : candidates) {
-        if (QFile::exists(c))
-            return QFileInfo(c).absoluteFilePath();
-    }
-    return {};
-}
-
-// Ultralytics YOLOv8 detection decode (letterbox pattern shared with
-// videopp's PoseDetector): output [1, 4+80, anchors], person score at row 4.
-std::vector<std::pair<cv::Rect, float>> detectPeople(cv::dnn::Net &net, const cv::Mat &frame)
-{
-    const int origW = frame.cols;
-    const int origH = frame.rows;
-    const float r = std::min(static_cast<float>(kInputSize) / origW,
-                             static_cast<float>(kInputSize) / origH);
-    const int newW = static_cast<int>(std::round(origW * r));
-    const int newH = static_cast<int>(std::round(origH * r));
-    const int padX = (kInputSize - newW) / 2;
-    const int padY = (kInputSize - newH) / 2;
-
-    cv::Mat resized;
-    cv::resize(frame, resized, cv::Size(newW, newH));
-    cv::Mat canvas(kInputSize, kInputSize, frame.type(), cv::Scalar(114, 114, 114));
-    resized.copyTo(canvas(cv::Rect(padX, padY, newW, newH)));
-
-    cv::Mat blob = cv::dnn::blobFromImage(canvas, 1.0 / 255.0,
-                                          cv::Size(kInputSize, kInputSize),
-                                          cv::Scalar(), /*swapRB=*/true, /*crop=*/false);
-    net.setInput(blob);
-
-    std::vector<cv::Mat> outputs;
-    net.forward(outputs, net.getUnconnectedOutLayersNames());
-    if (outputs.empty())
-        return {};
-
-    cv::Mat output = outputs[0];
-    if (output.dims == 3) {
-        output = cv::Mat(output.size[1], output.size[2], CV_32F,
-                         const_cast<void *>(static_cast<const void *>(output.ptr<float>())))
-                     .clone();
-        cv::transpose(output, output);
-    }
-
-    std::vector<cv::Rect> boxes;
-    std::vector<float> scores;
-    for (int i = 0; i < output.rows; ++i) {
-        const float *row = output.ptr<float>(i);
-        const float personScore = row[4];   // class 0 = person
-        if (personScore < kConfThresh)
-            continue;
-        const float cx = row[0], cy = row[1], w = row[2], h = row[3];
-        boxes.emplace_back(static_cast<int>((cx - w * 0.5f - padX) / r),
-                           static_cast<int>((cy - h * 0.5f - padY) / r),
-                           static_cast<int>(w / r),
-                           static_cast<int>(h / r));
-        scores.push_back(personScore);
-    }
-
-    std::vector<int> keep;
-    cv::dnn::NMSBoxes(boxes, scores, kConfThresh, kNmsThresh, keep);
-
-    std::vector<std::pair<cv::Rect, float>> result;
-    const cv::Rect frameRect(0, 0, origW, origH);
-    for (int k : keep) {
-        const cv::Rect clipped = boxes[k] & frameRect;
-        if (clipped.area() > 0)
-            result.emplace_back(clipped, scores[k]);
-    }
-    return result;
-}
 
 // Chip states, mirrored by the QML legend.
 enum ChipState { NotProcessed = 0, Good = 1, LowConf = 2, Lost = 3 };
@@ -207,20 +120,10 @@ void TrackingManager::handleRunFinished(bool completedAll)
 
 void TrackingManager::run()
 {
-    const QString modelPath = resolveModelPath();
-    if (modelPath.isEmpty()) {
-        emit error(QStringLiteral("Tracking: yolov8n.onnx not found (expected in models/)"));
-        emit runFinished(false);
-        return;
-    }
-    cv::dnn::Net net;
-    try {
-        net = cv::dnn::readNetFromONNX(modelPath.toStdString());
-        net.setPreferableBackend(cv::dnn::DNN_BACKEND_OPENCV);
-        net.setPreferableTarget(cv::dnn::DNN_TARGET_CPU);
-    } catch (const cv::Exception &e) {
-        emit error(QStringLiteral("Tracking: failed to load model: %1")
-                       .arg(QString::fromStdString(e.msg)));
+    YoloDetector detector;
+    QString loadError;
+    if (!detector.load(&loadError)) {
+        emit error(QStringLiteral("Tracking: %1").arg(loadError));
         emit runFinished(false);
         return;
     }
@@ -308,16 +211,16 @@ void TrackingManager::run()
                 continue;
             }
 
-            const auto people = detectPeople(net, frame);
+            const auto people = detector.detect(frame);
 
             std::vector<cv::Rect> dets;
             std::vector<double> confs;
             double maxConf = 0.0;
-            for (const auto &[box, conf] : people) {
-                dets.push_back(box);
-                confs.push_back(conf);
-                maxConf = std::max(maxConf, static_cast<double>(conf));
-                sumConfAll += conf;
+            for (const auto &det : people) {
+                dets.push_back(det.box);
+                confs.push_back(det.conf);
+                maxConf = std::max(maxConf, static_cast<double>(det.conf));
+                sumConfAll += det.conf;
                 ++nConfAll;
             }
 
