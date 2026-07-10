@@ -65,19 +65,25 @@ Un registro por video abierto. `status` avanza:
 |---|---|
 | `markers.json` | Marcadores de frame: `{ "markers": [ { "type": "match_start", "frame": 0 }, ... ], "fps": 29.92 }`. Tipos: `match_start`, `match_end`, `lineup_a`, `lineup_b`, `bench_a`, `bench_b`, `commercial_start`, `commercial_end`. |
 | `preprocessed_20fps.mp4` | Video fuente re-muestreado a 20 fps (mp4v). |
+| `lineups.json` | Resultado del OCR de alineaciones: `{ "teamA": [{number,name}...], "teamB": [...], "teamNameA": "ARGENTINA", "teamNameB": "" }`. Al abrir el video en la GUI se aplica a los rosters/nombres de Metadata **si es más reciente** que el `project.json` guardado (las ediciones manuales ganan). |
+| `lineups/<tipo>_f<frame>.bmp` | Frames capturados para el OCR. |
+| `video_chunks/chunks.json` | Índice de chunks: por chunk `number`, `file`, `frames`, `start_sec`, `end_sec` (tiempo absoluto del video; el último chunk suele ser parcial), más `fps` y `chunk_seconds` globales. |
 | `video_chunks/video_part_<NNN>.mp4` | Chunks de 1 minuto a 10 fps (600 frames), numerados `001, 002, …` desde el preprocesado si existe. |
 | `video_chunks/video_part_<NNN>.csv` | Tracking del chunk correspondiente. |
 
 ### video_part_<NNN>.csv
 ```
-frame,time_sec,track_id,x,y,w,h,conf
-0,0.00,1,674,83,141,392,0.91
+frame,time_sec,track_id,x,y,w,h,conf,chunk_start_sec,chunk_end_sec
+0,0.00,1,674,83,141,392,0.91,0.00,60.00
 ```
 - `frame`: índice local al chunk (0–599, a 10 fps).
 - `time_sec`: tiempo **absoluto** del video (`(NNN-1)·60 + frame/10`).
 - `track_id`: id del tracker IoU, local al chunk (los tracks no cruzan chunks).
 - `x,y,w,h`: bounding box en píxeles del video.
 - `conf`: confianza de la detección YOLOv8 (0–1).
-- Los frames cuyo `time_sec` cae dentro de un rango
-  `commercial_start`–`commercial_end` **no aparecen** (se descartan del
-  tracking). Un `commercial_start` sin cierre descarta hasta el final.
+- `chunk_start_sec,chunk_end_sec`: inicio y fin del chunk en tiempo absoluto
+  del video (el fin es real: el último chunk parcial no reporta 60 s).
+- Los frames cuyo `time_sec` cae en un rango excluido (antes de
+  `match_start`, después de `match_end`, o dentro de
+  `commercial_start`–`commercial_end`) **no aparecen**. Un
+  `commercial_start` sin cierre descarta hasta el final.

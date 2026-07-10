@@ -204,12 +204,16 @@ sourcePath, matchDir, commercialsSec)`.
 - `runChunks()` — usa el preprocesado si existe (si no, el original) y
   escribe chunks de **1 minuto a 10 fps**:
   `video_chunks/video_part_<NNN>.mp4` (600 frames por chunk, numeración
-  3 dígitos desde 001; borra chunks de corridas anteriores).
+  3 dígitos desde 001; borra chunks y CSVs de corridas anteriores).
+  Además escribe `video_chunks/chunks.json` con el rango de cada chunk
+  (`number`, `file`, `frames`, `start_sec`, `end_sec`).
 - `runTrack()` — por cada chunk corre `YoloDetector` frame a frame con un
   tracker IoU local (los tracks no cruzan chunks) y escribe
-  `video_part_<NNN>.csv` con `frame,time_sec,track_id,x,y,w,h,conf`
-  (`time_sec` absoluto del video). `isExcluded(sec)` omite por completo
-  los frames fuera de la ventana del partido y dentro de comerciales.
+  `video_part_<NNN>.csv` con
+  `frame,time_sec,track_id,x,y,w,h,conf,chunk_start_sec,chunk_end_sec`
+  (`time_sec` absoluto; `chunk_*` = rango real del chunk, con el fin
+  parcial exacto en el último). `isExcluded(sec)` omite por completo los
+  frames fuera de la ventana del partido y dentro de comerciales.
 - Señales: `progressChanged(frac, label)` y `opFinished(op, ok, error,
   result)` — entregadas queued al hilo GUI.
 - `requestStop()` / `stopAndWait()` — cancelación cooperativa (el
@@ -234,6 +238,11 @@ sourcePath, matchDir, commercialsSec)`.
 ## Modo headless (CLI)
 
 - `pepe_track_players.exe --extract-lineups <video>` — corre el OCR de
-  alineaciones de un video ya marcado e imprime los jugadores.
+  alineaciones de un video ya marcado e imprime jugadores y nombres de
+  equipo detectados.
 - `pepe_track_players.exe --dump-exclusions <video>` — imprime la ventana
   del partido y los rangos excluidos del tracking.
+- `pepe_track_players.exe --create-chunks <video>` — regenera los chunks
+  (y `chunks.json`). Ojo: borra los CSVs existentes de ese partido.
+- `pepe_track_players.exe --track-chunks <video>` — regenera los CSVs de
+  tracking por chunk (respeta las exclusiones de marcadores).
