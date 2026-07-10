@@ -7,7 +7,7 @@ jugadores de fútbol sobre video. UI con layout tipo IDE: reproductor central + 
 
 | Sección | Qué hace |
 |---|---|
-| **Video** | Reproductor OpenCV (play/pausa, scrub, timecode, selector de velocidad: nativa o 1/5/10/20/30/60/120 frames/s). Click sobre el video abre el dropdown de tagging con el roster; cada tag guarda frame, coordenadas de video y — si hay homografía — coordenadas de cancha en metros. Strip de calidad de tracking por frame. Panel izquierdo colapsable de operaciones (ver abajo). |
+| **Video** | Reproductor OpenCV (play/pausa con `Space`, scrub, ←/→ = ±5 s, timecode, selector de velocidad: nativa o 1/5/10/20/30/60/120 frames/s). Click sobre el video abre el dropdown de tagging con el roster; cada tag guarda frame, coordenadas de video y — si hay homografía — coordenadas de cancha en metros. Strip de calidad de tracking por frame. Panel izquierdo colapsable de operaciones (ver abajo). |
 | **Homography** | Puntos A/B/C/D seleccionables (panel derecho) y colocables con click sobre el frame. Recompute H resuelve la homografía imagen→cancha (105×68 m, DLT de 4 puntos), reporta error de reproyección y estado VERIFIED. Overlay de quad + diagonales + línea media. Stepper de frames ‹ › y saltos rápidos. |
 | **Metadata** | Formulario del partido (liga, temporada, fecha, sede, árbitro) y tablas editables de roster de ambos equipos (agregar / editar en línea / borrar). |
 | **Tracking** | Inferencia offline sobre todo el video con YOLOv8n ONNX (`cv::dnn`, clase person) + asociación IoU. Start/Stop, progreso, stat cards, status por frame (90 buckets) y tabla de tracks (frames, confianza, estado). |
@@ -26,8 +26,15 @@ Cada video abierto se registra con un id en `LOCAL_DATA/matches/games.json`
 - **Frame markers**: marca el frame actual como inicio/fin del partido,
   alineación A/B, banca A/B, o inicio/fin de comercial. Se guardan en
   `match_<id>/markers.json`, se listan en el panel (click → seek, × borra)
-  y se dibujan como ticks de color en el scrubber. Los rangos de comercial
-  se descartan por completo del tracking de chunks.
+  y se dibujan como ticks de color en el scrubber. **Ambos trackings**
+  (tab Tracking y Track chunks) saltan los frames antes de `match_start`,
+  después de `match_end` y dentro de comerciales; el Range chip del tab
+  Tracking refleja la ventana del partido.
+- **Extract lineups (OCR)**: con marcadores de Lineup/Bench, extrae de esos
+  frames los dorsales y nombres de ambos equipos usando el OCR de Windows
+  y llena las tablas de roster (guardando `match_<id>/lineups.json` y los
+  frames en `lineups/`). También disponible headless:
+  `pepe_track_players.exe --extract-lineups <video>`.
 - **Preprocess → 20 fps**: re-encodea el video fuente a 20 fps en
   `match_<id>/preprocessed_20fps.mp4` (status → `preprocessed`).
 - **Create chunks · 1 min @ 10 fps**: parte el video (el preprocesado si

@@ -45,6 +45,8 @@ set(SOURCES
     src/MatchManager.h
     src/VideoOpsWorker.cpp
     src/VideoOpsWorker.h
+    src/LineupExtractor.cpp
+    src/LineupExtractor.h
 )
 
 qt_add_executable(pepe_track_players WIN32 ${SOURCES})
@@ -69,12 +71,15 @@ else()
     target_compile_options(pepe_track_players PRIVATE -Wall -Wextra -Wpedantic)
 endif()
 
-# Ship the detection model next to the binary.
+# Ship the detection model and helper scripts next to the binary.
 add_custom_command(TARGET pepe_track_players POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_directory
             "${CMAKE_CURRENT_SOURCE_DIR}/models"
             "$<TARGET_FILE_DIR:pepe_track_players>/models"
-    COMMENT "Copying detection models"
+    COMMAND ${CMAKE_COMMAND} -E copy_directory
+            "${CMAKE_CURRENT_SOURCE_DIR}/scripts"
+            "$<TARGET_FILE_DIR:pepe_track_players>/scripts"
+    COMMENT "Copying detection models and scripts"
 )
 
 # Copy required Qt runtime DLLs (incl. QML imports) alongside the binary on Windows.
