@@ -26,7 +26,7 @@ Popup {
             id: headerItem
             text: dropdown.title
             color: Theme.textFaint
-            font { family: Theme.fontUi; pixelSize: 10.5; weight: Font.Bold; letterSpacing: 0.5 }
+            font { family: Theme.fontUi; pixelSize: 11; weight: Font.Bold; letterSpacing: 0.5 }
             padding: 4
         }
 
@@ -63,14 +63,14 @@ Popup {
                         Text {
                             text: player.number
                             color: "white"
-                            font { family: Theme.fontMono; pixelSize: 10.5; weight: Font.Bold }
+                            font { family: Theme.fontMono; pixelSize: 11; weight: Font.Bold }
                             anchors.centerIn: parent
                         }
                     }
                     Text {
                         text: player.name
                         color: Theme.text
-                        font { family: Theme.fontUi; pixelSize: 12.5 }
+                        font { family: Theme.fontUi; pixelSize: 13 }
                         anchors.verticalCenter: parent.verticalCenter
                     }
                 }
