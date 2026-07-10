@@ -15,7 +15,8 @@
 //    -> <matchDir>/video_chunks/video_part_NNN.mp4
 //  - Track: person detection + IoU tracks per chunk
 //    -> <matchDir>/video_chunks/video_part_NNN.csv
-//    (frames inside commercial ranges are skipped entirely)
+//    (frames inside excluded ranges — before match start, after match
+//    end, commercials — are skipped entirely)
 class VideoOpsWorker : public QThread
 {
     Q_OBJECT
@@ -27,9 +28,10 @@ public:
     explicit VideoOpsWorker(QObject *parent = nullptr);
     ~VideoOpsWorker() override;
 
-    // commercialsSec: [start,end] ranges in seconds of video time.
+    // excludedSec: [start,end] ranges in seconds of video time that the
+    // Track op must skip.
     void configure(Op op, const QString &sourcePath, const QString &matchDir,
-                   const std::vector<std::pair<double, double>> &commercialsSec);
+                   const std::vector<std::pair<double, double>> &excludedSec);
     void requestStop() { m_stop.store(true); }
     void stopAndWait();
 
@@ -44,12 +46,12 @@ private:
     void runPreprocess();
     void runChunks();
     void runTrack();
-    bool inCommercial(double sec) const;
+    bool isExcluded(double sec) const;
 
     Op      m_op{Preprocess};
     QString m_sourcePath;
     QString m_matchDir;
-    std::vector<std::pair<double, double>> m_commercials;
+    std::vector<std::pair<double, double>> m_excluded;
     std::atomic<bool> m_stop{false};
 };
 

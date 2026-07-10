@@ -2,9 +2,12 @@
 #define TRACKINGMANAGER_H
 
 #include <QThread>
+#include <QMutex>
+#include <QPair>
 #include <QVariantList>
 #include <QVariantMap>
 #include <QString>
+#include <QVector>
 #include <atomic>
 
 // Offline inference pass over the whole video: pedestrian detection
@@ -31,6 +34,10 @@ public:
     ~TrackingManager() override;
 
     void setSource(const QString &path);
+
+    // Frame ranges to skip (pre-match, post-match, commercials). Thread-safe;
+    // the worker snapshots them when a run starts.
+    void setExclusions(const QVector<QPair<int, int>> &frameRanges);
 
     bool isRunningInference() const { return m_runningInference; }
     bool completed() const { return m_completed; }
@@ -68,6 +75,8 @@ private:
 
     QString           m_sourcePath;
     std::atomic<bool> m_stopRequested{false};
+    QMutex            m_exclMutex;
+    QVector<QPair<int, int>> m_exclRanges;
 
     // GUI-thread state (updated only via queued applySnapshot).
     bool         m_runningInference{false};

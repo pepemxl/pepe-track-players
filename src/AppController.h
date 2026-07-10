@@ -81,6 +81,7 @@ public:
     Q_INVOKABLE void seekFrac(double frac);
     Q_INVOKABLE void seekFrame(int frame);
     Q_INVOKABLE void stepFrames(int delta);
+    Q_INVOKABLE void seekRelative(double seconds);
     Q_INVOKABLE QString timecode(double sec) const;
 
     // vx/vy in video pixel coordinates; team 0 = home, 1 = away.

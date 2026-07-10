@@ -68,6 +68,33 @@ AppController::AppController(QObject *parent)
     connect(m_tracking, &TrackingManager::tracksUpdated,
             m_tracksModel, &TracksModel::setRows);
 
+    // Keep the interactive tracker in sync with the match markers: frames
+    // before match start, after match end and inside commercials are
+    // excluded from both tracking paths.
+    auto pushExclusions = [this]() {
+        m_tracking->setExclusions(m_match->excludedFrameRanges());
+    };
+    connect(m_match, &MatchManager::markersChanged, this, pushExclusions);
+    connect(m_match, &MatchManager::matchChanged, this, pushExclusions);
+
+    // OCR'd lineups replace the corresponding roster.
+    connect(m_match, &MatchManager::lineupsReady, this,
+            [this](const QVariantList &teamA, const QVariantList &teamB) {
+        auto toPlayers = [](const QVariantList &list) {
+            QVector<Player> players;
+            for (const QVariant &v : list) {
+                const QVariantMap m = v.toMap();
+                players.append({m.value(QStringLiteral("number")).toInt(),
+                                m.value(QStringLiteral("name")).toString(),
+                                QStringLiteral("—")});
+            }
+            return players;
+        };
+        if (!teamA.isEmpty()) m_homeRoster->setPlayers(toPlayers(teamA));
+        if (!teamB.isEmpty()) m_awayRoster->setPlayers(toPlayers(teamB));
+        if (!teamA.isEmpty() || !teamB.isEmpty()) markDirty();
+    });
+
     // Anything the user edits makes the project dirty.
     connect(m_homeRoster, &RosterModel::edited, this, &AppController::markDirty);
     connect(m_awayRoster, &RosterModel::edited, this, &AppController::markDirty);
@@ -158,6 +185,17 @@ void AppController::stepFrames(int delta)
 {
     if (m_videoLoaded)
         m_engine->stepFrames(delta);
+}
+
+void AppController::seekRelative(double seconds)
+{
+    if (!m_videoLoaded)
+        return;
+    int target = m_currentFrame
+                 + static_cast<int>(seconds * (m_fps > 0.0 ? m_fps : 25.0));
+    if (target < 0) target = 0;
+    if (m_totalFrames > 0 && target >= m_totalFrames) target = m_totalFrames - 1;
+    m_engine->seekToFrame(target);
 }
 
 void AppController::setPlaybackFps(double fps)

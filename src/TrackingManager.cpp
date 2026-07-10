@@ -4,6 +4,7 @@
 #include <opencv2/opencv.hpp>
 
 #include <QElapsedTimer>
+#include <QMutexLocker>
 #include <algorithm>
 #include <vector>
 
@@ -74,6 +75,12 @@ void TrackingManager::setSource(const QString &path)
     emit tracksUpdated(m_tracks);
 }
 
+void TrackingManager::setExclusions(const QVector<QPair<int, int>> &frameRanges)
+{
+    QMutexLocker lock(&m_exclMutex);
+    m_exclRanges = frameRanges;
+}
+
 void TrackingManager::toggleRun()
 {
     if (m_runningInference) {
@@ -140,6 +147,20 @@ void TrackingManager::run()
     if (fps <= 0.0 || fps > 240.0) fps = 30.0;
     const int maxGapFrames = static_cast<int>(fps * 1.5);
 
+    // Snapshot the excluded frame ranges (pre/post match, commercials).
+    QVector<QPair<int, int>> excluded;
+    {
+        QMutexLocker lock(&m_exclMutex);
+        excluded = m_exclRanges;
+    }
+    auto isExcluded = [&excluded](int frame) {
+        for (const auto &r : excluded) {
+            if (frame >= r.first && frame <= r.second)
+                return true;
+        }
+        return false;
+    };
+
     std::vector<Track> tracks;
     int nextTrackId = 1;
     QVariantList chips;
@@ -205,7 +226,7 @@ void TrackingManager::run()
             break;
         }
 
-        if (frameIdx % kStride == 0) {
+        if (frameIdx % kStride == 0 && !isExcluded(frameIdx)) {
             if (!cap.retrieve(frame) || frame.empty()) {
                 ++frameIdx;
                 continue;

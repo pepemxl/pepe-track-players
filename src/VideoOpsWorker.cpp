@@ -42,12 +42,12 @@ VideoOpsWorker::~VideoOpsWorker()
 }
 
 void VideoOpsWorker::configure(Op op, const QString &sourcePath, const QString &matchDir,
-                               const std::vector<std::pair<double, double>> &commercialsSec)
+                               const std::vector<std::pair<double, double>> &excludedSec)
 {
     m_op = op;
     m_sourcePath = sourcePath;
     m_matchDir = matchDir;
-    m_commercials = commercialsSec;
+    m_excluded = excludedSec;
     m_stop.store(false);
 }
 
@@ -59,9 +59,9 @@ void VideoOpsWorker::stopAndWait()
     }
 }
 
-bool VideoOpsWorker::inCommercial(double sec) const
+bool VideoOpsWorker::isExcluded(double sec) const
 {
-    for (const auto &[start, end] : m_commercials) {
+    for (const auto &[start, end] : m_excluded) {
         if (sec >= start && sec <= end)
             return true;
     }
@@ -257,8 +257,8 @@ void VideoOpsWorker::runTrack()
                 return;
             }
             const double absSec = chunkStartSec + f / kChunkFps;
-            if (inCommercial(absSec))
-                continue;   // discarded from tracking entirely
+            if (isExcluded(absSec))
+                continue;   // pre-match / post-match / commercial: discarded
 
             const auto dets = detector.detect(frame);
 

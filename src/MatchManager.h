@@ -8,6 +8,7 @@
 #include <vector>
 
 class VideoOpsWorker;
+class LineupExtractor;
 
 // Per-video match registry + frame markers + offline video operations.
 //
@@ -24,6 +25,10 @@ class MatchManager : public QObject
     Q_PROPERTY(QString matchDir READ matchDir NOTIFY matchChanged)
     Q_PROPERTY(int chunkCount READ chunkCount NOTIFY matchChanged)
     Q_PROPERTY(QVariantList markers READ markers NOTIFY markersChanged)
+    Q_PROPERTY(int matchStartFrame READ matchStartFrame NOTIFY markersChanged)
+    Q_PROPERTY(int matchEndFrame READ matchEndFrame NOTIFY markersChanged)
+    Q_PROPERTY(bool hasLineupMarkers READ hasLineupMarkers NOTIFY markersChanged)
+    Q_PROPERTY(bool lineupsExtracted READ lineupsExtracted NOTIFY matchChanged)
     Q_PROPERTY(bool opRunning READ opRunning NOTIFY opStateChanged)
     Q_PROPERTY(QString opLabel READ opLabel NOTIFY opStateChanged)
     Q_PROPERTY(double opProgress READ opProgress NOTIFY opStateChanged)
@@ -42,6 +47,15 @@ public:
     QString matchDir() const { return m_matchDir; }
     int chunkCount() const { return m_chunkCount; }
     QVariantList markers() const { return m_markers; }
+    int matchStartFrame() const;   // first match_start marker, -1 if none
+    int matchEndFrame() const;     // first match_end marker, -1 if none
+    bool hasLineupMarkers() const;
+    bool lineupsExtracted() const { return m_lineupsExtracted; }
+
+    // Video-time ranges excluded from tracking: before match_start, after
+    // match_end, and every commercial range.
+    std::vector<std::pair<double, double>> excludedRangesSec() const;
+    QVector<QPair<int, int>> excludedFrameRanges() const;
     bool opRunning() const { return m_opRunning; }
     QString opLabel() const { return m_opLabel; }
     double opProgress() const { return m_opProgress; }
@@ -53,12 +67,15 @@ public:
     Q_INVOKABLE void preprocess();
     Q_INVOKABLE void createChunks();
     Q_INVOKABLE void trackChunks();
+    Q_INVOKABLE void extractLineups();
     Q_INVOKABLE void cancelOp();
 
 signals:
     void matchChanged();
     void markersChanged();
     void opStateChanged();
+    // Player lists from the OCR pass: [{number, name}, ...] per team.
+    void lineupsReady(const QVariantList &teamA, const QVariantList &teamB);
 
 private:
     static QString dataRoot();
@@ -74,8 +91,12 @@ private:
     void startOp(int op);
     void onOpProgress(double fraction, const QString &label);
     void onOpFinished(int op, bool ok, const QString &error, const QVariantMap &result);
+    void onLineupsFinished(bool ok, const QString &error,
+                           const QVariantList &teamA, const QVariantList &teamB);
+    int firstMarkerFrame(const QString &type) const;
 
-    VideoOpsWorker *m_worker{nullptr};
+    VideoOpsWorker  *m_worker{nullptr};
+    LineupExtractor *m_lineup{nullptr};
 
     QString m_videoPath;
     double  m_fps{25.0};
@@ -92,6 +113,7 @@ private:
     QString m_opLabel;
     double  m_opProgress{0.0};
     QString m_lastError;
+    bool    m_lineupsExtracted{false};
 };
 
 #endif
