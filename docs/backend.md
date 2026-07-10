@@ -34,6 +34,8 @@ Fachada principal. Posee el motor de video, los modelos y los managers.
   `togglePlay()` reinicia desde el frame 0.
 - `seekFrac(double 0..1)` / `seekFrame(int)` / `stepFrames(int delta)` —
   búsqueda absoluta por fracción, por frame, o paso relativo (±N frames).
+- `seekRelative(double seconds)` — salto relativo en segundos (flechas
+  ←/→ del teclado: ±5 s en la vista Video).
 - `timecode(double sec) → QString` — formatea `HH:MM:SS.FF` usando el fps real.
 - `addTag(vx, vy, team, rosterRow)` — crea un `TagEvent` en el frame actual
   con coordenadas de video en píxeles; si la homografía está verificada
@@ -172,11 +174,17 @@ offline. Expuesto como `App.match`.
   por frame, guardado inmediato a `markers.json`. Tipos: `match_start`,
   `match_end`, `lineup_a`, `lineup_b`, `bench_a`, `bench_b`,
   `commercial_start`, `commercial_end`.
-- `preprocess()` / `createChunks()` / `trackChunks()` / `cancelOp()` —
-  lanzan una operación en `VideoOpsWorker` (una a la vez).
-- `commercialRangesSec()` (privada) — empareja `commercial_start`/`_end` en
-  orden de frame (un start sin cerrar corre hasta el final del video);
-  estos rangos se excluyen del tracking de chunks.
+- `preprocess()` / `createChunks()` / `trackChunks()` / `extractLineups()`
+  / `cancelOp()` — lanzan una operación en `VideoOpsWorker` o
+  `LineupExtractor` (una a la vez).
+- `excludedRangesSec()` / `excludedFrameRanges()` — rangos que **ambos**
+  caminos de tracking saltan: antes de `match_start`, después de
+  `match_end`, y cada rango comercial (un `commercial_start` sin cerrar
+  corre hasta el final). `AppController` los empuja al `TrackingManager`
+  en cada cambio de marcadores; `startOp` los pasa al `VideoOpsWorker`.
+- `matchStartFrame` / `matchEndFrame` / `hasLineupMarkers` /
+  `lineupsExtracted` — propiedades derivadas de los marcadores para la UI
+  (Range chip del tab Tracking, botón de OCR).
 - Al terminar cada op actualiza `status` en games.json:
   `registered → preprocessed → chunked → tracked`.
 - Propiedades: `registered`, `matchId`, `status`, `matchDir`, `chunkCount`,
@@ -200,9 +208,32 @@ sourcePath, matchDir, commercialsSec)`.
 - `runTrack()` — por cada chunk corre `YoloDetector` frame a frame con un
   tracker IoU local (los tracks no cruzan chunks) y escribe
   `video_part_<NNN>.csv` con `frame,time_sec,track_id,x,y,w,h,conf`
-  (`time_sec` absoluto del video). `inCommercial(sec)` omite por completo
-  los frames dentro de rangos comerciales.
+  (`time_sec` absoluto del video). `isExcluded(sec)` omite por completo
+  los frames fuera de la ventana del partido y dentro de comerciales.
 - Señales: `progressChanged(frac, label)` y `opFinished(op, ok, error,
   result)` — entregadas queued al hilo GUI.
 - `requestStop()` / `stopAndWait()` — cancelación cooperativa (el
   preprocess cancelado borra el archivo parcial).
+
+## LineupExtractor (`LineupExtractor.h/.cpp`)
+
+`QThread` de extracción de alineaciones por OCR: para cada marcador
+`lineup_a/b` y `bench_a/b`, salta a ese frame, lo guarda como BMP en
+`<matchDir>/lineups/` (BMP: único codec del build de OpenCV) y lo pasa al
+**OCR de Windows** (`scripts/ocr.ps1`, `Windows.Media.Ocr` vía QProcess).
+
+- Parser: filas numeradas (`"10 MESSI"`, con tolerancia al badge de capitán
+  OCR-eado como letra suelta: `"B 10 LIONEL MESSI"`) y filas de solo nombre
+  (≥ 2 palabras) cuando el OCR pierde el dorsal → número 0, editable.
+  Blocklist de señalética (FIFA/CUP/WORLD/ENTRENADOR/COACH).
+- Dedupe por dorsal y por nombre, conservando la primera aparición.
+- `finishedExtraction(ok, error, teamA, teamB)` → `MatchManager` escribe
+  `lineups.json` y emite `lineupsReady`; `AppController` reemplaza los
+  rosters (equipo A → home, B → away) y marca dirty.
+
+## Modo headless (CLI)
+
+- `pepe_track_players.exe --extract-lineups <video>` — corre el OCR de
+  alineaciones de un video ya marcado e imprime los jugadores.
+- `pepe_track_players.exe --dump-exclusions <video>` — imprime la ventana
+  del partido y los rangos excluidos del tracking.
