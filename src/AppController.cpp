@@ -160,6 +160,16 @@ void AppController::stepFrames(int delta)
         m_engine->stepFrames(delta);
 }
 
+void AppController::setPlaybackFps(double fps)
+{
+    if (fps < 0.0) fps = 0.0;
+    if (qFuzzyCompare(m_playbackFps + 1.0, fps + 1.0))
+        return;
+    m_playbackFps = fps;
+    m_engine->setPlaybackFps(fps);
+    emit playbackFpsChanged();
+}
+
 QString AppController::timecode(double sec) const
 {
     if (sec < 0.0) sec = 0.0;

@@ -34,6 +34,12 @@ public:
     void stepFrames(int delta);   // relative to the currently displayed frame
 
     void setSpeed(double speed);  // clamped to [0.1, 8.0]
+
+    // Fixed playback rate in frames shown per second (0 = video's native
+    // fps, optionally scaled by setSpeed).
+    void setPlaybackFps(double fps);
+    double playbackFps() const { return m_playbackFps.load(); }
+
     double fps() const { return m_fps.load(); }
     int totalFrames() const { return m_totalFrames.load(); }
 
@@ -54,6 +60,7 @@ private:
     std::atomic<int>    m_seekFrame{-1};   // -1 = no absolute seek pending
     std::atomic<int>    m_stepDelta{0};
     std::atomic<double> m_speed{1.0};
+    std::atomic<double> m_playbackFps{0.0};   // 0 = native rate
     std::atomic<double> m_fps{0.0};
     std::atomic<int>    m_totalFrames{0};
     QMutex              m_pauseMutex;

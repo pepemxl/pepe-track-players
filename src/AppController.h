@@ -31,6 +31,7 @@ class AppController : public QObject
     Q_PROPERTY(int currentFrame READ currentFrame NOTIFY positionChanged)
     Q_PROPERTY(double positionSec READ positionSec NOTIFY positionChanged)
     Q_PROPERTY(int frameSerial READ frameSerial NOTIFY frameSerialChanged)
+    Q_PROPERTY(double playbackFps READ playbackFps WRITE setPlaybackFps NOTIFY playbackFpsChanged)
     Q_PROPERTY(bool dirty READ dirty NOTIFY dirtyChanged)
     Q_PROPERTY(QString lastError READ lastError NOTIFY errorChanged)
 
@@ -60,6 +61,8 @@ public:
     int currentFrame() const { return m_currentFrame; }
     double positionSec() const { return m_positionSec; }
     int frameSerial() const { return m_frameSerial; }
+    double playbackFps() const { return m_playbackFps; }
+    void setPlaybackFps(double fps);
     bool dirty() const { return m_dirty; }
     QString lastError() const { return m_lastError; }
 
@@ -90,6 +93,7 @@ signals:
     void playingChanged();
     void positionChanged();
     void frameSerialChanged();
+    void playbackFpsChanged();
     void dirtyChanged();
     void errorChanged();
 
@@ -123,6 +127,7 @@ private:
     int     m_currentFrame{0};
     double  m_positionSec{0.0};
     int     m_frameSerial{0};
+    double  m_playbackFps{0.0};   // 0 = native rate
     bool    m_dirty{false};
     QString m_lastError;
 };

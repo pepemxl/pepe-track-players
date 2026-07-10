@@ -67,6 +67,12 @@ void VideoEngine::setSpeed(double speed)
     m_speed.store(std::clamp(speed, 0.1, 8.0));
 }
 
+void VideoEngine::setPlaybackFps(double fps)
+{
+    if (fps < 0.0) fps = 0.0;
+    m_playbackFps.store(std::min(fps, 240.0));
+}
+
 void VideoEngine::run()
 {
     m_stopped.store(false);
@@ -133,8 +139,14 @@ void VideoEngine::run()
                 m_pauseCond.wait(&m_pauseMutex);
             }
         } else {
-            const double s = m_speed.load();
-            int delay = static_cast<int>(baseFrameDelayMs / (s > 0.0 ? s : 1.0));
+            const double playbackFps = m_playbackFps.load();
+            int delay;
+            if (playbackFps > 0.0) {
+                delay = static_cast<int>(1000.0 / playbackFps);
+            } else {
+                const double s = m_speed.load();
+                delay = static_cast<int>(baseFrameDelayMs / (s > 0.0 ? s : 1.0));
+            }
             if (delay < 1) delay = 1;
             QThread::msleep(delay);
         }
