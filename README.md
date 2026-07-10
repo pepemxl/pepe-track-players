@@ -37,8 +37,13 @@ el mismo video.
 
 ## Build (Windows, MinGW)
 
-Requisitos: Qt 6.11 (mingw_64) en `C:\Qt`, y el árbol vcpkg para OpenCV 4.12
-con ffmpeg+dnn.
+Requisitos: Qt 6.11 (mingw_64) en `C:\Qt` y vcpkg en `C:\vcpkg`
+(`git clone https://github.com/microsoft/vcpkg C:\vcpkg` +
+`bootstrap-vcpkg.bat`). OpenCV 4.12 (ffmpeg+dnn) se instala solo vía el
+manifest `vcpkg.json` en la primera configuración (~15 min; queda en
+`vcpkg_installed/` local al proyecto). Los DLLs de OpenCV/FFmpeg se copian
+junto al exe (deployment applocal de vcpkg), así que `build\bin` queda
+autocontenido.
 
 ```bat
 build.bat   :: configura (Ninja + vcpkg toolchain) y compila a build\bin
