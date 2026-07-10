@@ -39,14 +39,17 @@ Item {
                         anchors.fill: parent
                         property var pts: App.homography.points
                         property bool overlayOn: App.homography.overlayEnabled
+                        // Repaint whenever the letterboxed geometry moves.
+                        property real paintedW: surface.paintedWidth
+                        property real paintedH: surface.paintedHeight
+                        property bool loaded: App.videoLoaded
                         onPtsChanged: requestPaint()
                         onOverlayOnChanged: requestPaint()
                         onWidthChanged: requestPaint()
                         onHeightChanged: requestPaint()
-                        Connections {
-                            target: surface
-                            function onPaintedWidthChanged() { quadCanvas.requestPaint() }
-                        }
+                        onPaintedWChanged: requestPaint()
+                        onPaintedHChanged: requestPaint()
+                        onLoadedChanged: requestPaint()
 
                         onPaint: {
                             const ctx = getContext("2d")
@@ -161,7 +164,7 @@ Item {
                             anchors.centerIn: parent
                             text: "Click on the image to place point " + view.selectedPointId
                             color: "#402508"
-                            font { family: Theme.fontUi; pixelSize: 11.5; weight: Font.DemiBold }
+                            font { family: Theme.fontUi; pixelSize: 12; weight: Font.DemiBold }
                         }
                     }
                 }
@@ -280,18 +283,20 @@ Item {
                     width: parent.width
                     spacing: 0
 
-                    Row {
+                    Item {
                         width: parent.width
+                        height: 16
                         Text {
+                            anchors.left: parent.left
                             text: "POINT CORRESPONDENCES"
                             color: Theme.textDim
                             font { family: Theme.fontUi; pixelSize: 11; weight: Font.Bold; letterSpacing: 0.5 }
                         }
-                        Item { width: parent.width - 200; height: 1 }
                         Text {
+                            anchors.right: parent.right
                             text: "click to select"
                             color: Theme.textFaint
-                            font { family: Theme.fontUi; pixelSize: 10.5 }
+                            font { family: Theme.fontUi; pixelSize: 11 }
                         }
                     }
                     Item { width: 1; height: 10 }
@@ -397,7 +402,7 @@ Item {
                     Text {
                         text: "Show pitch overlay"
                         color: Theme.text
-                        font { family: Theme.fontUi; pixelSize: 12.5 }
+                        font { family: Theme.fontUi; pixelSize: 13 }
                         anchors.verticalCenter: parent.verticalCenter
                         anchors.left: parent.left
                         anchors.leftMargin: 12
@@ -436,7 +441,7 @@ Item {
                         Text {
                             text: "Recompute H"
                             color: "#10231a"
-                            font { family: Theme.fontUi; pixelSize: 12.5; weight: Font.Bold }
+                            font { family: Theme.fontUi; pixelSize: 13; weight: Font.Bold }
                             anchors.centerIn: parent
                         }
                         MouseArea {
@@ -457,7 +462,7 @@ Item {
                         Text {
                             text: "Reset points"
                             color: Theme.text
-                            font { family: Theme.fontUi; pixelSize: 12.5; weight: Font.DemiBold }
+                            font { family: Theme.fontUi; pixelSize: 13; weight: Font.DemiBold }
                             anchors.centerIn: parent
                         }
                         MouseArea {
