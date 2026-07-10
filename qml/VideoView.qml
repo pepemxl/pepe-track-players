@@ -209,7 +209,7 @@ Item {
                     Text {
                         text: "FRAME TRACKING QUALITY"
                         color: Theme.textDim
-                        font { family: Theme.fontUi; pixelSize: 10.5; weight: Font.Bold; letterSpacing: 0.5 }
+                        font { family: Theme.fontUi; pixelSize: 11; weight: Font.Bold; letterSpacing: 0.5 }
                     }
                     Row {
                         width: parent.width
@@ -304,14 +304,14 @@ Item {
                                 Text {
                                     text: playerName
                                     color: Theme.text
-                                    font { family: Theme.fontUi; pixelSize: 12.5; weight: Font.DemiBold }
+                                    font { family: Theme.fontUi; pixelSize: 13; weight: Font.DemiBold }
                                 }
                                 Text {
                                     text: "frame " + frame + " · " + (hasPitch
                                         ? "pitch (" + pitchX.toFixed(1) + ", " + pitchY.toFixed(1) + ")m"
                                         : timecode)
                                     color: Theme.textDim
-                                    font { family: Theme.fontMono; pixelSize: 10.5 }
+                                    font { family: Theme.fontMono; pixelSize: 11 }
                                 }
                             }
                         }

@@ -108,7 +108,7 @@ Rectangle {
                 Text {
                     text: App.dirty ? "UNSAVED CHANGES" : "PROJECT SAVED"
                     color: App.dirty ? Theme.yellow : Theme.greenBright
-                    font { family: Theme.fontMono; pixelSize: 11.5; weight: Font.DemiBold }
+                    font { family: Theme.fontMono; pixelSize: 12; weight: Font.DemiBold }
                     anchors.verticalCenter: parent.verticalCenter
                 }
             }

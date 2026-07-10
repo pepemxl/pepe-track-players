@@ -49,7 +49,7 @@ Flickable {
                         id: modelText
                         text: tracking.modelName
                         color: Theme.text
-                        font { family: Theme.fontMono; pixelSize: 12.5 }
+                        font { family: Theme.fontMono; pixelSize: 13 }
                         anchors.centerIn: parent
                     }
                 }
@@ -70,7 +70,7 @@ Flickable {
                         id: rangeText
                         text: App.videoLoaded ? "frame 0 — " + App.totalFrames : "no video"
                         color: Theme.text
-                        font { family: Theme.fontMono; pixelSize: 12.5 }
+                        font { family: Theme.fontMono; pixelSize: 13 }
                         anchors.centerIn: parent
                     }
                 }
@@ -94,7 +94,7 @@ Flickable {
                     }
                     color: tracking.completed ? Theme.green
                          : tracking.running ? Theme.greenBright : Theme.textFaint
-                    font { family: Theme.fontMono; pixelSize: 12.5 }
+                    font { family: Theme.fontMono; pixelSize: 13 }
                     anchors.verticalCenter: parent.verticalCenter
                 }
 
@@ -120,7 +120,7 @@ Flickable {
                         id: runText
                         text: tracking.running ? "Stop" : (tracking.completed ? "Rerun" : "Start")
                         color: tracking.running ? "white" : "#10231a"
-                        font { family: Theme.fontUi; pixelSize: 12.5; weight: Font.Bold }
+                        font { family: Theme.fontUi; pixelSize: 13; weight: Font.Bold }
                         anchors.centerIn: parent
                     }
                     MouseArea {
@@ -264,7 +264,7 @@ Flickable {
                                     width: modelData.w
                                     text: modelData.t
                                     color: Theme.textDim
-                                    font { family: Theme.fontUi; pixelSize: 10.5; weight: Font.Bold; letterSpacing: 0.4 }
+                                    font { family: Theme.fontUi; pixelSize: 11; weight: Font.Bold; letterSpacing: 0.4 }
                                     anchors.verticalCenter: parent.verticalCenter
                                 }
                             }

@@ -69,7 +69,7 @@ Column {
                                 width: modelData.w
                                 text: modelData.t
                                 color: Theme.textDim
-                                font { family: Theme.fontUi; pixelSize: 10.5; weight: Font.Bold; letterSpacing: 0.4 }
+                                font { family: Theme.fontUi; pixelSize: 11; weight: Font.Bold; letterSpacing: 0.4 }
                                 anchors.verticalCenter: parent.verticalCenter
                             }
                         }
@@ -153,7 +153,7 @@ Column {
                 Text {
                     text: "+ Add player"
                     color: Theme.greenBright
-                    font { family: Theme.fontUi; pixelSize: 12.5; weight: Font.DemiBold }
+                    font { family: Theme.fontUi; pixelSize: 13; weight: Font.DemiBold }
                     anchors.verticalCenter: parent.verticalCenter
                     anchors.left: parent.left
                     anchors.leftMargin: 14
