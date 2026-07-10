@@ -1,1 +1,6 @@
 /PLAN/
+/models/
+/LOCAL_DATA/
+/build*/
+/vcpkg_installed/
+*.user
