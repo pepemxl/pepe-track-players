@@ -5,6 +5,9 @@
 
 #include <QDir>
 #include <QFile>
+#include <QJsonArray>
+#include <QJsonDocument>
+#include <QJsonObject>
 #include <QTextStream>
 #include <algorithm>
 
@@ -162,7 +165,21 @@ void VideoOpsWorker::runChunks()
     int writtenInChunk = 0;
     double nextOutSec = 0.0;
     cv::Mat frame;
+    QJsonArray chunksIndex;   // start/end of every chunk -> chunks.json
 
+    auto closeChunk = [&]() {
+        if (writer.isOpened() && writtenInChunk > 0) {
+            const double startSec = (chunkNumber - 1) * static_cast<double>(kChunkSeconds);
+            QJsonObject entry;
+            entry[QStringLiteral("number")]    = chunkNumber;
+            entry[QStringLiteral("file")]      = chunkName(chunkNumber, "mp4");
+            entry[QStringLiteral("frames")]    = writtenInChunk;
+            entry[QStringLiteral("start_sec")] = startSec;
+            entry[QStringLiteral("end_sec")]   = startSec + writtenInChunk / kChunkFps;
+            chunksIndex.append(entry);
+        }
+        writer.release();
+    };
     auto openNextChunk = [&]() -> bool {
         ++chunkNumber;
         writtenInChunk = 0;
@@ -181,7 +198,7 @@ void VideoOpsWorker::runChunks()
         const double t = idx / srcFps;
         while (t >= nextOutSec - 1e-9) {
             if (!writer.isOpened() || writtenInChunk >= framesPerChunk) {
-                writer.release();
+                closeChunk();
                 if (!openNextChunk()) {
                     emit opFinished(Chunk, false,
                                     QStringLiteral("cannot open chunk writer #%1").arg(chunkNumber), {});
@@ -197,7 +214,15 @@ void VideoOpsWorker::runChunks()
                                  QStringLiteral("Writing chunk %1").arg(chunkNumber));
         }
     }
-    writer.release();
+    closeChunk();
+
+    QJsonObject indexRoot;
+    indexRoot[QStringLiteral("fps")]           = kChunkFps;
+    indexRoot[QStringLiteral("chunk_seconds")] = kChunkSeconds;
+    indexRoot[QStringLiteral("chunks")]        = chunksIndex;
+    QFile indexFile(chunksDir + QStringLiteral("/chunks.json"));
+    if (indexFile.open(QIODevice::WriteOnly | QIODevice::Truncate))
+        indexFile.write(QJsonDocument(indexRoot).toJson(QJsonDocument::Indented));
 
     QVariantMap result;
     result[QStringLiteral("chunks")] = chunkNumber;
@@ -238,6 +263,9 @@ void VideoOpsWorker::runTrack()
         // some chunk were missing.
         const int number = chunks.at(c).mid(11, 3).toInt();
         const double chunkStartSec = (number - 1) * static_cast<double>(kChunkSeconds);
+        const double chunkEndSec = chunkStartSec + chunkFrames / kChunkFps;
+        const QString chunkRange = QString::number(chunkStartSec, 'f', 2) + QLatin1Char(',')
+                                   + QString::number(chunkEndSec, 'f', 2);
 
         QFile csv(chunksDir + QLatin1Char('/') + chunkName(number, "csv"));
         if (!csv.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
@@ -245,7 +273,7 @@ void VideoOpsWorker::runTrack()
             return;
         }
         QTextStream out(&csv);
-        out << "frame,time_sec,track_id,x,y,w,h,conf\n";
+        out << "frame,time_sec,track_id,x,y,w,h,conf,chunk_start_sec,chunk_end_sec\n";
 
         // Tracks do not carry across chunks: each CSV stands alone.
         std::vector<Tr> tracks;
@@ -290,7 +318,8 @@ void VideoOpsWorker::runTrack()
                 out << f << ',' << QString::number(absSec, 'f', 2) << ','
                     << t.id << ',' << t.box.x << ',' << t.box.y << ','
                     << t.box.width << ',' << t.box.height << ','
-                    << QString::number(conf, 'f', 2) << '\n';
+                    << QString::number(conf, 'f', 2) << ','
+                    << chunkRange << '\n';
                 ++rowsWritten;
             }
 

@@ -367,8 +367,7 @@ void MatchManager::extractLineups()
     m_lineup->start();
 }
 
-void MatchManager::onLineupsFinished(bool ok, const QString &error,
-                                     const QVariantList &teamA, const QVariantList &teamB)
+void MatchManager::onLineupsFinished(bool ok, const QString &error, const QVariantMap &result)
 {
     m_opRunning = false;
     if (!ok) {
@@ -377,12 +376,17 @@ void MatchManager::onLineupsFinished(bool ok, const QString &error,
         return;
     }
 
+    const QVariantList teamA = result.value(QStringLiteral("teamA")).toList();
+    const QVariantList teamB = result.value(QStringLiteral("teamB")).toList();
+
     QJsonObject root;
     QJsonArray a, b;
     for (const QVariant &v : teamA) a.append(QJsonObject::fromVariantMap(v.toMap()));
     for (const QVariant &v : teamB) b.append(QJsonObject::fromVariantMap(v.toMap()));
     root[QStringLiteral("teamA")] = a;
     root[QStringLiteral("teamB")] = b;
+    root[QStringLiteral("teamNameA")] = result.value(QStringLiteral("teamNameA")).toString();
+    root[QStringLiteral("teamNameB")] = result.value(QStringLiteral("teamNameB")).toString();
     QFile file(m_matchDir + QStringLiteral("/lineups.json"));
     if (file.open(QIODevice::WriteOnly | QIODevice::Truncate))
         file.write(QJsonDocument(root).toJson(QJsonDocument::Indented));
@@ -391,7 +395,26 @@ void MatchManager::onLineupsFinished(bool ok, const QString &error,
     m_opLabel = QStringLiteral("Lineups: %1 + %2 players").arg(teamA.size()).arg(teamB.size());
     emit matchChanged();
     emit opStateChanged();
-    emit lineupsReady(teamA, teamB);
+    emit lineupsReady(result);
+}
+
+QVariantMap MatchManager::loadLineups() const
+{
+    QFile file(m_matchDir + QStringLiteral("/lineups.json"));
+    if (m_matchDir.isEmpty() || !file.open(QIODevice::ReadOnly))
+        return {};
+    const QJsonObject o = QJsonDocument::fromJson(file.readAll()).object();
+    QVariantMap result;
+    result[QStringLiteral("teamA")] = o[QStringLiteral("teamA")].toArray().toVariantList();
+    result[QStringLiteral("teamB")] = o[QStringLiteral("teamB")].toArray().toVariantList();
+    result[QStringLiteral("teamNameA")] = o[QStringLiteral("teamNameA")].toString();
+    result[QStringLiteral("teamNameB")] = o[QStringLiteral("teamNameB")].toString();
+    return result;
+}
+
+QDateTime MatchManager::lineupsModified() const
+{
+    return QFileInfo(m_matchDir + QStringLiteral("/lineups.json")).lastModified();
 }
 
 void MatchManager::cancelOp()

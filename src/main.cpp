@@ -19,9 +19,14 @@ static int runExtractLineups(const QString &videoPath)
     match.setVideo(videoPath, 25.0, 0);   // fps/frames irrelevant for OCR jobs
 
     QObject::connect(&match, &MatchManager::lineupsReady,
-                     [](const QVariantList &teamA, const QVariantList &teamB) {
-        auto dump = [](const char *team, const QVariantList &list) {
-            std::fprintf(stdout, "%s (%d players)\n", team, static_cast<int>(list.size()));
+                     [](const QVariantMap &result) {
+        auto dump = [&result](const char *team, const char *listKey, const char *nameKey) {
+            const QVariantList list = result.value(QLatin1String(listKey)).toList();
+            const QString name = result.value(QLatin1String(nameKey)).toString();
+            std::fprintf(stdout, "%s%s%s (%d players)\n", team,
+                         name.isEmpty() ? "" : " — ",
+                         name.toUtf8().constData(),
+                         static_cast<int>(list.size()));
             for (const QVariant &v : list) {
                 const QVariantMap m = v.toMap();
                 std::fprintf(stdout, "  %2d  %s\n",
@@ -29,8 +34,8 @@ static int runExtractLineups(const QString &videoPath)
                              m.value(QStringLiteral("name")).toString().toUtf8().constData());
             }
         };
-        dump("TEAM A", teamA);
-        dump("TEAM B", teamB);
+        dump("TEAM A", "teamA", "teamNameA");
+        dump("TEAM B", "teamB", "teamNameB");
         std::fflush(stdout);
         QCoreApplication::exit(0);
     });
@@ -73,9 +78,9 @@ static int runDumpExclusions(const QString &videoPath)
     return 0;
 }
 
-// Headless: regenerate the per-chunk tracking CSVs (video must already be
-// registered and chunked). Honors the marker exclusions.
-static int runTrackChunks(const QString &videoPath)
+// Headless video op ("chunk" or "track") on an already-registered video.
+// Honors the marker exclusions.
+static int runMatchOp(const QString &videoPath, const QString &op)
 {
     cv::VideoCapture cap(videoPath.toStdString());
     double fps = cap.isOpened() ? cap.get(cv::CAP_PROP_FPS) : 25.0;
@@ -86,8 +91,8 @@ static int runTrackChunks(const QString &videoPath)
 
     MatchManager match;
     match.setVideo(videoPath, fps, total);
-    if (!match.registered() || match.chunkCount() <= 0) {
-        std::fprintf(stderr, "error: no chunks for this video — run Create chunks first\n");
+    if (op == QLatin1String("track") && match.chunkCount() <= 0) {
+        std::fprintf(stderr, "error: no chunks for this video — run --create-chunks first\n");
         return 1;
     }
     std::fprintf(stdout, "match #%d, %d chunks, window frame %d .. %d\n",
@@ -115,7 +120,10 @@ static int runTrackChunks(const QString &videoPath)
         }
     });
 
-    match.trackChunks();
+    if (op == QLatin1String("track"))
+        match.trackChunks();
+    else
+        match.createChunks();
     if (!match.opRunning())
         return 1;
     return QCoreApplication::exec();
@@ -134,7 +142,9 @@ int main(int argc, char *argv[])
         if (args.size() >= 3 && args.at(1) == QLatin1String("--dump-exclusions"))
             return runDumpExclusions(args.at(2));
         if (args.size() >= 3 && args.at(1) == QLatin1String("--track-chunks"))
-            return runTrackChunks(args.at(2));
+            return runMatchOp(args.at(2), QStringLiteral("track"));
+        if (args.size() >= 3 && args.at(1) == QLatin1String("--create-chunks"))
+            return runMatchOp(args.at(2), QStringLiteral("chunk"));
     }
 
     // Basic style so QML can fully restyle the controls.

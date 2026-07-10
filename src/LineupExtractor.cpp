@@ -128,17 +128,54 @@ void LineupExtractor::parsePlayers(const QStringList &lines, QVariantList *playe
     }
 }
 
+QString LineupExtractor::detectTeamName(const QStringList &lines)
+{
+    // The team name is the header right above the first numbered player
+    // row ("ARGENTINA" over "23 EMILIANO MARTÍNEZ"): walk back from that
+    // row to the nearest all-caps line.
+    static const QRegularExpression numberedRe(
+        QStringLiteral("^\\s*(?:[\\p{L}#*'•·]{1,2}\\s+)?(\\d{1,2})[\\s.:·•—-]+"
+                       "[\\p{L}][\\p{L}'’. -]{1,30}\\s*$"),
+        QRegularExpression::UseUnicodePropertiesOption);
+    static const QRegularExpression headerRe(
+        QStringLiteral("^[\\p{Lu}][\\p{Lu} .'-]{2,25}$"),
+        QRegularExpression::UseUnicodePropertiesOption);
+    static const QStringList blocklist = {
+        QStringLiteral("FIFA"), QStringLiteral("CUP"), QStringLiteral("WORLD"),
+        QStringLiteral("ENTRENADOR"), QStringLiteral("COACH"), QStringLiteral("TÉCNICO"),
+        QStringLiteral("SUPLENTES"), QStringLiteral("BENCH"), QStringLiteral("VS"),
+    };
+
+    int firstPlayer = -1;
+    for (int i = 0; i < lines.size(); ++i) {
+        if (numberedRe.match(lines.at(i).trimmed()).hasMatch()) {
+            firstPlayer = i;
+            break;
+        }
+    }
+    for (int i = firstPlayer - 1; i >= 0; --i) {
+        const QString line = lines.at(i).trimmed();
+        bool blocked = false;
+        for (const QString &word : blocklist) {
+            if (line.toUpper().contains(word)) { blocked = true; break; }
+        }
+        if (!blocked && headerRe.match(line).hasMatch())
+            return line.simplified();
+    }
+    return {};
+}
+
 void LineupExtractor::run()
 {
     const QString scriptPath = resolveOcrScript();
     if (scriptPath.isEmpty()) {
-        emit finishedExtraction(false, QStringLiteral("scripts/ocr.ps1 not found"), {}, {});
+        emit finishedExtraction(false, QStringLiteral("scripts/ocr.ps1 not found"), {});
         return;
     }
 
     cv::VideoCapture cap;
     if (!cap.open(m_videoPath.toStdString())) {
-        emit finishedExtraction(false, QStringLiteral("cannot open video"), {}, {});
+        emit finishedExtraction(false, QStringLiteral("cannot open video"), {});
         return;
     }
 
@@ -146,9 +183,10 @@ void LineupExtractor::run()
     QDir().mkpath(outDir);
 
     QVariantList teamA, teamB;
+    QString teamNameA, teamNameB;
     for (int i = 0; i < m_jobs.size(); ++i) {
         if (m_stop.load()) {
-            emit finishedExtraction(false, QStringLiteral("cancelled"), {}, {});
+            emit finishedExtraction(false, QStringLiteral("cancelled"), {});
             return;
         }
         const Job &job = m_jobs.at(i);
@@ -168,10 +206,17 @@ void LineupExtractor::run()
         QString ocrError;
         const QStringList lines = ocrImage(scriptPath, bmp, &ocrError);
         if (lines.isEmpty() && !ocrError.isEmpty()) {
-            emit finishedExtraction(false, ocrError, {}, {});
+            emit finishedExtraction(false, ocrError, {});
             return;
         }
         parsePlayers(lines, job.team == 0 ? &teamA : &teamB);
+
+        // The team name only shows on the starting-lineup graphic.
+        if (job.type.startsWith(QLatin1String("lineup"))) {
+            QString &target = job.team == 0 ? teamNameA : teamNameB;
+            if (target.isEmpty())
+                target = detectTeamName(lines);
+        }
     }
 
     // Dedupe keeping the first occurrence: by shirt number when known,
@@ -195,6 +240,12 @@ void LineupExtractor::run()
     teamA = dedupe(teamA);
     teamB = dedupe(teamB);
 
+    QVariantMap result;
+    result[QStringLiteral("teamA")] = teamA;
+    result[QStringLiteral("teamB")] = teamB;
+    result[QStringLiteral("teamNameA")] = teamNameA;
+    result[QStringLiteral("teamNameB")] = teamNameB;
+
     emit progressChanged(1.0, QStringLiteral("Lineups extracted"));
-    emit finishedExtraction(true, {}, teamA, teamB);
+    emit finishedExtraction(true, {}, result);
 }

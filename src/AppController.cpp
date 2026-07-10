@@ -77,23 +77,9 @@ AppController::AppController(QObject *parent)
     connect(m_match, &MatchManager::markersChanged, this, pushExclusions);
     connect(m_match, &MatchManager::matchChanged, this, pushExclusions);
 
-    // OCR'd lineups replace the corresponding roster.
-    connect(m_match, &MatchManager::lineupsReady, this,
-            [this](const QVariantList &teamA, const QVariantList &teamB) {
-        auto toPlayers = [](const QVariantList &list) {
-            QVector<Player> players;
-            for (const QVariant &v : list) {
-                const QVariantMap m = v.toMap();
-                players.append({m.value(QStringLiteral("number")).toInt(),
-                                m.value(QStringLiteral("name")).toString(),
-                                QStringLiteral("—")});
-            }
-            return players;
-        };
-        if (!teamA.isEmpty()) m_homeRoster->setPlayers(toPlayers(teamA));
-        if (!teamB.isEmpty()) m_awayRoster->setPlayers(toPlayers(teamB));
-        if (!teamA.isEmpty() || !teamB.isEmpty()) markDirty();
-    });
+    // OCR'd lineups replace the corresponding roster and team names.
+    connect(m_match, &MatchManager::lineupsReady,
+            this, &AppController::applyLineups);
 
     // Anything the user edits makes the project dirty.
     connect(m_homeRoster, &RosterModel::edited, this, &AppController::markDirty);
@@ -268,7 +254,42 @@ void AppController::onVideoInfo(int width, int height, int totalFrames, double f
     m_videoLoaded = true;
     m_homography->setImageSize(width, height);
     m_match->setVideo(m_videoPath, fps, totalFrames);
+
+    // Reflect a previously extracted lineup (e.g. from the headless CLI)
+    // unless the saved project is newer — manual roster edits win.
+    const QVariantMap lineups = m_match->loadLineups();
+    if (!lineups.isEmpty()) {
+        const QFileInfo project(QDir(projectDir()).filePath(QStringLiteral("project.json")));
+        if (!project.exists() || project.lastModified() < m_match->lineupsModified())
+            applyLineups(lineups);
+    }
+
     emit videoStateChanged();
+}
+
+void AppController::applyLineups(const QVariantMap &lineups)
+{
+    auto toPlayers = [](const QVariantList &list) {
+        QVector<Player> players;
+        for (const QVariant &v : list) {
+            const QVariantMap m = v.toMap();
+            players.append({m.value(QStringLiteral("number")).toInt(),
+                            m.value(QStringLiteral("name")).toString(),
+                            QStringLiteral("—")});
+        }
+        return players;
+    };
+    const QVariantList teamA = lineups.value(QStringLiteral("teamA")).toList();
+    const QVariantList teamB = lineups.value(QStringLiteral("teamB")).toList();
+    const QString nameA = lineups.value(QStringLiteral("teamNameA")).toString();
+    const QString nameB = lineups.value(QStringLiteral("teamNameB")).toString();
+
+    if (!teamA.isEmpty()) m_homeRoster->setPlayers(toPlayers(teamA));
+    if (!teamB.isEmpty()) m_awayRoster->setPlayers(toPlayers(teamB));
+    if (!nameA.isEmpty()) m_metadata->setHomeTeam(nameA);
+    if (!nameB.isEmpty()) m_metadata->setAwayTeam(nameB);
+    if (!teamA.isEmpty() || !teamB.isEmpty())
+        markDirty();
 }
 
 void AppController::markDirty()

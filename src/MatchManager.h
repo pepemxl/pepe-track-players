@@ -1,9 +1,11 @@
 #ifndef MATCHMANAGER_H
 #define MATCHMANAGER_H
 
+#include <QDateTime>
 #include <QObject>
 #include <QString>
 #include <QVariantList>
+#include <QVariantMap>
 #include <utility>
 #include <vector>
 
@@ -56,6 +58,11 @@ public:
     // match_end, and every commercial range.
     std::vector<std::pair<double, double>> excludedRangesSec() const;
     QVector<QPair<int, int>> excludedFrameRanges() const;
+
+    // Contents of <matchDir>/lineups.json (empty map if absent), same
+    // shape as the lineupsReady payload.
+    QVariantMap loadLineups() const;
+    QDateTime lineupsModified() const;
     bool opRunning() const { return m_opRunning; }
     QString opLabel() const { return m_opLabel; }
     double opProgress() const { return m_opProgress; }
@@ -74,8 +81,9 @@ signals:
     void matchChanged();
     void markersChanged();
     void opStateChanged();
-    // Player lists from the OCR pass: [{number, name}, ...] per team.
-    void lineupsReady(const QVariantList &teamA, const QVariantList &teamB);
+    // OCR result: { teamA: [{number,name}...], teamB: [...],
+    //               teamNameA: str, teamNameB: str }
+    void lineupsReady(const QVariantMap &result);
 
 private:
     static QString dataRoot();
@@ -91,8 +99,7 @@ private:
     void startOp(int op);
     void onOpProgress(double fraction, const QString &label);
     void onOpFinished(int op, bool ok, const QString &error, const QVariantMap &result);
-    void onLineupsFinished(bool ok, const QString &error,
-                           const QVariantList &teamA, const QVariantList &teamB);
+    void onLineupsFinished(bool ok, const QString &error, const QVariantMap &result);
     int firstMarkerFrame(const QString &type) const;
 
     VideoOpsWorker  *m_worker{nullptr};

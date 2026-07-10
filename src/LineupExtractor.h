@@ -4,6 +4,7 @@
 #include <QThread>
 #include <QString>
 #include <QVariantList>
+#include <QVariantMap>
 #include <QVector>
 #include <atomic>
 
@@ -33,8 +34,9 @@ public:
 
 signals:
     void progressChanged(double fraction, const QString &label);
-    void finishedExtraction(bool ok, const QString &error,
-                            const QVariantList &teamA, const QVariantList &teamB);
+    // result: { teamA: [{number,name}...], teamB: [...],
+    //           teamNameA: str, teamNameB: str }
+    void finishedExtraction(bool ok, const QString &error, const QVariantMap &result);
 
 protected:
     void run() override;
@@ -44,6 +46,7 @@ private:
     static QStringList ocrImage(const QString &scriptPath, const QString &imagePath,
                                 QString *errorOut);
     static void parsePlayers(const QStringList &lines, QVariantList *players);
+    static QString detectTeamName(const QStringList &lines);
 
     QString m_videoPath;
     QString m_matchDir;

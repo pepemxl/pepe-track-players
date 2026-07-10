@@ -4,6 +4,7 @@
 #include <QObject>
 #include <QImage>
 #include <QUrl>
+#include <QVariantMap>
 
 class VideoEngine;
 class FrameProvider;
@@ -103,6 +104,7 @@ private:
     void onVideoInfo(int width, int height, int totalFrames, double fps);
     void markDirty();
     void loadProjectIfPresent();
+    void applyLineups(const QVariantMap &lineups);
     QString projectDir() const;
 
     VideoEngine       *m_engine{nullptr};
