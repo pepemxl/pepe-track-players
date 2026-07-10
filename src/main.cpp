@@ -27,5 +27,11 @@ int main(int argc, char *argv[])
                      Qt::QueuedConnection);
     engine.loadFromModule("PepeTrack", "Main");
 
+    // Optional: open a video passed on the command line.
+    const QStringList args = app.arguments();
+    if (args.size() > 1) {
+        controller.openVideo(QUrl::fromLocalFile(args.at(1)));
+    }
+
     return app.exec();
 }
