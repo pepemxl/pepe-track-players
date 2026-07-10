@@ -1,0 +1,12 @@
+{
+    "name": "pepe-track-players",
+    "version-string": "0.1.0",
+    "description": "Qt6 QML + OpenCV football player tracker",
+    "dependencies": [
+        {
+            "name": "opencv4",
+            "default-features": false,
+            "features": ["ffmpeg", "dnn"]
+        }
+    ]
+}
