@@ -39,6 +39,12 @@ set(SOURCES
     src/TracksModel.h
     src/TrackingManager.cpp
     src/TrackingManager.h
+    src/YoloDetector.cpp
+    src/YoloDetector.h
+    src/MatchManager.cpp
+    src/MatchManager.h
+    src/VideoOpsWorker.cpp
+    src/VideoOpsWorker.h
 )
 
 qt_add_executable(pepe_track_players WIN32 ${SOURCES})
