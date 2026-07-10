@@ -28,6 +28,16 @@ ApplicationWindow {
         enabled: root.activeTab === 0
         onActivated: App.togglePlay()
     }
+    Shortcut {
+        sequence: "Left"
+        enabled: root.activeTab === 0
+        onActivated: App.seekRelative(-5)
+    }
+    Shortcut {
+        sequence: "Right"
+        enabled: root.activeTab === 0
+        onActivated: App.seekRelative(5)
+    }
 
     Column {
         anchors.fill: parent

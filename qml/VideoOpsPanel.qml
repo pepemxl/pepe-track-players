@@ -243,6 +243,13 @@ Rectangle {
                 enabled2: match.chunkCount > 0
                 onTriggered: match.trackChunks()
             }
+            OpButton {
+                width: parent.width
+                label: "Extract lineups (OCR)"
+                done: match.lineupsExtracted
+                enabled2: match.hasLineupMarkers
+                onTriggered: match.extractLineups()
+            }
 
             // Progress / error
             Column {

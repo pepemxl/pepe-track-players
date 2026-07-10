@@ -68,7 +68,16 @@ Flickable {
                     anchors.verticalCenter: parent.verticalCenter
                     Text {
                         id: rangeText
-                        text: App.videoLoaded ? "frame 0 — " + App.totalFrames : "no video"
+                        // Match window from the frame markers (Video panel):
+                        // frames outside it and commercials are skipped.
+                        text: {
+                            if (!App.videoLoaded) return "no video"
+                            const start = App.match.matchStartFrame >= 0
+                                ? App.match.matchStartFrame : 0
+                            const end = App.match.matchEndFrame >= 0
+                                ? App.match.matchEndFrame : App.totalFrames
+                            return "frame " + start + " — " + end
+                        }
                         color: Theme.text
                         font { family: Theme.fontMono; pixelSize: 13 }
                         anchors.centerIn: parent
