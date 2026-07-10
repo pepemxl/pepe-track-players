@@ -17,6 +17,10 @@ constexpr double kPreprocessFps = 20.0;
 constexpr double kChunkFps      = 10.0;
 constexpr int    kChunkSeconds  = 60;
 constexpr double kTrackIou      = 0.3;
+// A track unmatched for this long is dead: it may not re-acquire a
+// detection later (that would entangle several players into one track);
+// the player reappearing becomes a new track instead.
+constexpr int    kTrackMaxMiss  = 15;   // 1.5 s at chunk fps
 
 QString chunkName(int number, const char *ext)
 {
@@ -292,6 +296,8 @@ void VideoOpsWorker::runTrack()
 
             std::vector<bool> used(dets.size(), false);
             for (Tr &t : tracks) {
+                if (f - t.lastFrame > kTrackMaxMiss)
+                    continue;   // dead track: never re-acquires
                 double best = kTrackIou;
                 int bestIdx = -1;
                 for (size_t d = 0; d < dets.size(); ++d) {

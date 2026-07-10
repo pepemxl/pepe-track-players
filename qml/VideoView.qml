@@ -3,8 +3,12 @@ import QtQuick.Controls
 
 // Section 1 — central player with tagging. Click the video to place a tag:
 // a dropdown asks which player; the tag stores frame + video/pitch coords.
+// Clicking inside a tracked bounding box assigns the player to that track
+// instead; right-click on a box unassigns it (or reveals its track id).
 Item {
     id: view
+
+    property bool showDetections: true
 
     Row {
         anchors.fill: parent
@@ -48,6 +52,79 @@ Item {
                         }
                     }
 
+                    // Detected player boxes from the chunk-tracking CSVs,
+                    // looked up by playback position (0.1 s slots).
+                    Repeater {
+                        model: view.showDetections && App.videoLoaded
+                               && App.tracking.hasDetections
+                            ? App.tracking.detectionsAt(App.positionSec) : []
+                        delegate: Rectangle {
+                            required property var modelData
+                            readonly property bool assigned: modelData.assigned === true
+                            readonly property bool inferred: modelData.inferred === true
+                            x: surface.fromVideoX(modelData.x)
+                            y: surface.fromVideoY(modelData.y)
+                            width: modelData.w * surface.videoScale
+                            height: modelData.h * surface.videoScale
+                            color: "transparent"
+                            border.color: assigned ? Theme.teamColor(modelData.team)
+                                : modelData.conf >= 0.5 ? Theme.green : Theme.yellow
+                            border.width: assigned && !inferred ? 3 : 2
+                            opacity: inferred ? 0.85 : 1
+                            radius: 3
+
+                            Rectangle {
+                                anchors.bottom: parent.top
+                                anchors.bottomMargin: 1
+                                anchors.left: parent.left
+                                width: detLabel.implicitWidth + 8
+                                height: assigned ? 16 : 14
+                                radius: 3
+                                color: parent.border.color
+                                Text {
+                                    id: detLabel
+                                    anchors.centerIn: parent
+                                    // "≈" marks identities inferred by
+                                    // propagation rather than tagged by hand.
+                                    text: assigned
+                                        ? (inferred ? "≈P" : "P") + modelData.playerNumber
+                                        : "T" + modelData.trackId
+                                    color: assigned ? "white" : "#10231a"
+                                    font { family: Theme.fontMono; pixelSize: assigned ? 10 : 9; weight: Font.Bold }
+                                }
+                            }
+                        }
+                    }
+
+                    // Detections on/off chip (below the frame badge). Above
+                    // the tagging MouseArea so it stays clickable.
+                    Rectangle {
+                        visible: App.tracking.hasDetections
+                        z: 3
+                        anchors.top: parent.top
+                        anchors.right: parent.right
+                        anchors.topMargin: 42
+                        anchors.rightMargin: 12
+                        width: detToggleText.implicitWidth + 18
+                        height: 24
+                        radius: 6
+                        color: Theme.overlayBg
+                        border.color: view.showDetections ? "#5930d980" : Theme.border2
+                        border.width: 1
+                        Text {
+                            id: detToggleText
+                            anchors.centerIn: parent
+                            text: view.showDetections ? "▣ DETECTIONS ON" : "□ DETECTIONS OFF"
+                            color: view.showDetections ? Theme.greenBright : Theme.textDim
+                            font { family: Theme.fontMono; pixelSize: 10 }
+                        }
+                        MouseArea {
+                            anchors.fill: parent
+                            cursorShape: Qt.PointingHandCursor
+                            onClicked: view.showDetections = !view.showDetections
+                        }
+                    }
+
                     // Tag markers near the current frame (±1s window).
                     // Roles are read through `model.*` because the tag's
                     // x/y roles would shadow the Item's own geometry.
@@ -84,16 +161,93 @@ Item {
                     MouseArea {
                         anchors.fill: parent
                         enabled: App.videoLoaded
+                        acceptedButtons: Qt.LeftButton | Qt.RightButton
                         cursorShape: enabled ? Qt.CrossCursor : Qt.ArrowCursor
+
+                        function detectionAt(vx, vy) {
+                            if (!view.showDetections || !App.tracking.hasDetections)
+                                return null
+                            const dets = App.tracking.detectionsAt(App.positionSec)
+                            for (let i = 0; i < dets.length; ++i) {
+                                const d = dets[i]
+                                if (vx >= d.x && vx <= d.x + d.w
+                                        && vy >= d.y && vy <= d.y + d.h)
+                                    return d
+                            }
+                            return null
+                        }
+
                         onClicked: (mouse) => {
                             if (!surface.insidePainted(mouse.x, mouse.y))
                                 return
+                            const vx = surface.toVideoX(mouse.x)
+                            const vy = surface.toVideoY(mouse.y)
+
+                            // Right click on a box: unassign it, or reveal
+                            // its track id when it has no player yet.
+                            if (mouse.button === Qt.RightButton) {
+                                const d = detectionAt(vx, vy)
+                                if (!d)
+                                    return
+                                if (d.assigned === true) {
+                                    App.clearTrackAssignment(d.key)
+                                    trackToast.show("track " + d.key + " unassigned")
+                                } else {
+                                    trackToast.show("track " + d.key
+                                                    + " · conf " + d.conf.toFixed(2))
+                                }
+                                return
+                            }
+
                             App.pause()
-                            tagDropdown.pendingVx = surface.toVideoX(mouse.x)
-                            tagDropdown.pendingVy = surface.toVideoY(mouse.y)
+
+                            // Left click inside a tracked bounding box assigns
+                            // the player to that track instead of dropping a
+                            // positional tag marker.
+                            const hit = detectionAt(vx, vy)
+                            tagDropdown.pendingTrackKey = hit ? hit.key : ""
+
+                            tagDropdown.pendingVx = vx
+                            tagDropdown.pendingVy = vy
                             tagDropdown.x = Math.min(mouse.x, surface.width - tagDropdown.width - 8)
                             tagDropdown.y = Math.min(mouse.y, surface.height - tagDropdown.height - 8)
                             tagDropdown.open()
+                        }
+                    }
+
+                    // Transient info toast (right-click on a box)
+                    Rectangle {
+                        id: trackToast
+                        property string message: ""
+                        function show(msg) {
+                            message = msg
+                            opacity = 1
+                            toastTimer.restart()
+                        }
+                        visible: opacity > 0
+                        opacity: 0
+                        z: 4
+                        anchors.bottom: parent.bottom
+                        anchors.bottomMargin: 14
+                        anchors.horizontalCenter: parent.horizontalCenter
+                        width: toastText.implicitWidth + 26
+                        height: 30
+                        radius: 8
+                        color: "#e6121419"
+                        border.color: "#5930d980"
+                        border.width: 1
+                        Behavior on opacity { NumberAnimation { duration: 180 } }
+                        Text {
+                            id: toastText
+                            anchors.centerIn: parent
+                            text: trackToast.message
+                            color: Theme.greenBright
+                            font { family: Theme.fontMono; pixelSize: 11 }
+                        }
+                        Timer {
+                            id: toastTimer
+                            interval: 1800
+                            onTriggered: trackToast.opacity = 0
                         }
                     }
 
@@ -101,9 +255,20 @@ Item {
                         id: tagDropdown
                         property double pendingVx: 0
                         property double pendingVy: 0
-                        title: "TAG PLAYER — FRAME " + App.currentFrame
-                        onPlayerPicked: (team, rosterRow) =>
-                            App.addTag(pendingVx, pendingVy, team, rosterRow)
+                        property string pendingTrackKey: ""
+                        title: pendingTrackKey !== ""
+                            ? "ASSIGN PLAYER — TRACK " + pendingTrackKey
+                            : "TAG PLAYER — FRAME " + App.currentFrame
+                        onPlayerPicked: (team, rosterRow) => {
+                            if (pendingTrackKey !== "") {
+                                const p = (team === 0 ? App.homeRoster
+                                                      : App.awayRoster).get(rosterRow)
+                                App.assignTrack(pendingTrackKey,
+                                                p.number, p.name, team)
+                            } else {
+                                App.addTag(pendingVx, pendingVy, team, rosterRow)
+                            }
+                        }
                     }
                 }
 
@@ -358,10 +523,54 @@ Item {
                 anchors.topMargin: 20
                 spacing: 12
 
-                Text {
-                    text: "TAGS · " + App.tags.count
-                    color: Theme.textDim
-                    font { family: Theme.fontUi; pixelSize: 11; weight: Font.Bold; letterSpacing: 0.5 }
+                Item {
+                    width: parent.width
+                    height: 22
+
+                    Text {
+                        anchors.left: parent.left
+                        anchors.verticalCenter: parent.verticalCenter
+                        text: "TAGS · " + App.tags.count
+                        color: Theme.textDim
+                        font { family: Theme.fontUi; pixelSize: 11; weight: Font.Bold; letterSpacing: 0.5 }
+                    }
+
+                    // Undo / redo for tagging (tags + track assignments)
+                    Row {
+                        anchors.right: parent.right
+                        anchors.verticalCenter: parent.verticalCenter
+                        spacing: 5
+
+                        Repeater {
+                            model: [
+                                { glyph: "↶", isUndo: true },
+                                { glyph: "↷", isUndo: false },
+                            ]
+                            delegate: Rectangle {
+                                required property var modelData
+                                readonly property bool usable: modelData.isUndo
+                                    ? App.canUndo : App.canRedo
+                                width: 22; height: 22; radius: 6
+                                color: histMouse.containsMouse && usable
+                                    ? Theme.borderHi : Theme.surfaceHi
+                                opacity: usable ? 1 : 0.35
+                                Text {
+                                    anchors.centerIn: parent
+                                    text: modelData.glyph
+                                    color: Theme.textBright
+                                    font.pixelSize: 12
+                                }
+                                MouseArea {
+                                    id: histMouse
+                                    anchors.fill: parent
+                                    hoverEnabled: true
+                                    enabled: usable
+                                    cursorShape: Qt.PointingHandCursor
+                                    onClicked: modelData.isUndo ? App.undo() : App.redo()
+                                }
+                            }
+                        }
+                    }
                 }
 
                 ListView {
@@ -444,7 +653,7 @@ Item {
                                 anchors.margins: -6
                                 hoverEnabled: true
                                 cursorShape: Qt.PointingHandCursor
-                                onClicked: App.tags.removeTag(index)
+                                onClicked: App.removeTag(index)
                             }
                         }
                     }

@@ -19,6 +19,44 @@
 #include <QVariantMap>
 #include <cmath>
 
+namespace {
+
+QVariantMap tagToMap(const TagEvent &t)
+{
+    QVariantMap m;
+    m[QStringLiteral("id")]           = t.id;
+    m[QStringLiteral("frame")]        = t.frame;
+    m[QStringLiteral("timecode")]     = t.timecode;
+    m[QStringLiteral("playerNumber")] = t.playerNumber;
+    m[QStringLiteral("playerName")]   = t.playerName;
+    m[QStringLiteral("team")]         = t.team;
+    m[QStringLiteral("x")]            = t.x;
+    m[QStringLiteral("y")]            = t.y;
+    m[QStringLiteral("pitchX")]       = t.pitchX;
+    m[QStringLiteral("pitchY")]       = t.pitchY;
+    m[QStringLiteral("hasPitch")]     = t.hasPitch;
+    return m;
+}
+
+TagEvent tagFromMap(const QVariantMap &m)
+{
+    TagEvent t;
+    t.id           = m.value(QStringLiteral("id")).toInt();
+    t.frame        = m.value(QStringLiteral("frame")).toInt();
+    t.timecode     = m.value(QStringLiteral("timecode")).toString();
+    t.playerNumber = m.value(QStringLiteral("playerNumber")).toInt();
+    t.playerName   = m.value(QStringLiteral("playerName")).toString();
+    t.team         = m.value(QStringLiteral("team")).toInt();
+    t.x            = m.value(QStringLiteral("x")).toDouble();
+    t.y            = m.value(QStringLiteral("y")).toDouble();
+    t.pitchX       = m.value(QStringLiteral("pitchX")).toDouble();
+    t.pitchY       = m.value(QStringLiteral("pitchY")).toDouble();
+    t.hasPitch     = m.value(QStringLiteral("hasPitch")).toBool();
+    return t;
+}
+
+} // namespace
+
 AppController::AppController(QObject *parent)
     : QObject(parent)
 {
@@ -77,6 +115,17 @@ AppController::AppController(QObject *parent)
     connect(m_match, &MatchManager::markersChanged, this, pushExclusions);
     connect(m_match, &MatchManager::matchChanged, this, pushExclusions);
 
+    // Show persisted chunk-tracking results in the Tracking tab, both when
+    // a tracked video is opened and right after a Track chunks op finishes.
+    auto refreshFromChunks = [this]() {
+        if (m_match->status() == QLatin1String("tracked")) {
+            m_tracking->loadFromChunkCsvs(
+                m_match->matchDir() + QStringLiteral("/video_chunks"),
+                m_durationSec, m_match->excludedRangesSec());
+        }
+    };
+    connect(m_match, &MatchManager::matchChanged, this, refreshFromChunks);
+
     // OCR'd lineups replace the corresponding roster and team names.
     connect(m_match, &MatchManager::lineupsReady,
             this, &AppController::applyLineups);
@@ -116,6 +165,11 @@ void AppController::openVideo(const QUrl &url)
     m_videoPath = path;
     m_videoName = QFileInfo(path).fileName();
     m_playing = false;
+
+    // Undo history belongs to the previous video's tagging session.
+    m_undoStack.clear();
+    m_redoStack.clear();
+    emit undoChanged();
 
     m_engine->setSource(path);
     m_engine->setPaused(true);   // show the first frame, then hold
@@ -231,7 +285,128 @@ void AppController::addTag(double vx, double vy, int team, int rosterRow)
         tag.pitchY = p.y();
         tag.hasPitch = true;
     }
-    m_tags->addTag(tag);
+    tag.id = m_tags->addTag(tag);
+
+    QVariantMap cmd;
+    cmd[QStringLiteral("op")] = QStringLiteral("addTag");
+    cmd[QStringLiteral("tag")] = tagToMap(tag);
+    pushCommand(cmd);
+}
+
+void AppController::removeTag(int row)
+{
+    if (row < 0 || row >= m_tags->tags().size())
+        return;
+    const TagEvent tag = m_tags->tags().at(row);
+    m_tags->removeTag(row);
+
+    QVariantMap cmd;
+    cmd[QStringLiteral("op")] = QStringLiteral("removeTag");
+    cmd[QStringLiteral("row")] = row;
+    cmd[QStringLiteral("tag")] = tagToMap(tag);
+    pushCommand(cmd);
+}
+
+void AppController::assignTrack(const QString &key, int number,
+                                const QString &name, int team)
+{
+    const QVariantMap prev = m_tracking->assignmentFor(key);
+    m_tracking->assignTrack(key, number, name, team);
+
+    QVariantMap next;
+    next[QStringLiteral("number")] = number;
+    next[QStringLiteral("name")] = name;
+    next[QStringLiteral("team")] = team;
+
+    QVariantMap cmd;
+    cmd[QStringLiteral("op")] = QStringLiteral("assign");
+    cmd[QStringLiteral("key")] = key;
+    cmd[QStringLiteral("prev")] = prev;
+    cmd[QStringLiteral("next")] = next;
+    pushCommand(cmd);
+}
+
+void AppController::clearTrackAssignment(const QString &key)
+{
+    const QVariantMap prev = m_tracking->assignmentFor(key);
+    if (prev.isEmpty())
+        return;
+    m_tracking->clearAssignment(key);
+
+    QVariantMap cmd;
+    cmd[QStringLiteral("op")] = QStringLiteral("clearAssign");
+    cmd[QStringLiteral("key")] = key;
+    cmd[QStringLiteral("prev")] = prev;
+    pushCommand(cmd);
+}
+
+void AppController::pushCommand(const QVariantMap &cmd)
+{
+    m_undoStack.append(cmd);
+    while (m_undoStack.size() > 100)
+        m_undoStack.removeFirst();
+    m_redoStack.clear();
+    emit undoChanged();
+}
+
+void AppController::applyCommand(const QVariantMap &cmd, bool isUndo)
+{
+    const QString op = cmd.value(QStringLiteral("op")).toString();
+    const QString key = cmd.value(QStringLiteral("key")).toString();
+    const QVariantMap prev = cmd.value(QStringLiteral("prev")).toMap();
+    const QVariantMap next = cmd.value(QStringLiteral("next")).toMap();
+
+    auto assignFrom = [this, &key](const QVariantMap &info) {
+        if (info.isEmpty()) {
+            m_tracking->clearAssignment(key);
+        } else {
+            m_tracking->assignTrack(key,
+                                    info.value(QStringLiteral("number")).toInt(),
+                                    info.value(QStringLiteral("name")).toString(),
+                                    info.value(QStringLiteral("team")).toInt());
+        }
+    };
+
+    if (op == QLatin1String("addTag")) {
+        const TagEvent tag = tagFromMap(cmd.value(QStringLiteral("tag")).toMap());
+        if (isUndo)
+            m_tags->removeById(tag.id);
+        else
+            m_tags->insertTag(0, tag);
+    } else if (op == QLatin1String("removeTag")) {
+        const TagEvent tag = tagFromMap(cmd.value(QStringLiteral("tag")).toMap());
+        if (isUndo)
+            m_tags->insertTag(cmd.value(QStringLiteral("row")).toInt(), tag);
+        else
+            m_tags->removeById(tag.id);
+    } else if (op == QLatin1String("assign")) {
+        assignFrom(isUndo ? prev : next);
+    } else if (op == QLatin1String("clearAssign")) {
+        if (isUndo)
+            assignFrom(prev);
+        else
+            m_tracking->clearAssignment(key);
+    }
+}
+
+void AppController::undo()
+{
+    if (m_undoStack.isEmpty())
+        return;
+    const QVariantMap cmd = m_undoStack.takeLast();
+    applyCommand(cmd, true);
+    m_redoStack.append(cmd);
+    emit undoChanged();
+}
+
+void AppController::redo()
+{
+    if (m_redoStack.isEmpty())
+        return;
+    const QVariantMap cmd = m_redoStack.takeLast();
+    applyCommand(cmd, false);
+    m_undoStack.append(cmd);
+    emit undoChanged();
 }
 
 void AppController::onFrameReady(const QImage &frame, int frameIndex, double posSec)

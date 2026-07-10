@@ -5,6 +5,7 @@
 #include <QImage>
 #include <QUrl>
 #include <QVariantMap>
+#include <QVector>
 
 class VideoEngine;
 class FrameProvider;
@@ -35,6 +36,8 @@ class AppController : public QObject
     Q_PROPERTY(double playbackFps READ playbackFps WRITE setPlaybackFps NOTIFY playbackFpsChanged)
     Q_PROPERTY(bool dirty READ dirty NOTIFY dirtyChanged)
     Q_PROPERTY(QString lastError READ lastError NOTIFY errorChanged)
+    Q_PROPERTY(bool canUndo READ canUndo NOTIFY undoChanged)
+    Q_PROPERTY(bool canRedo READ canRedo NOTIFY undoChanged)
 
     Q_PROPERTY(QObject *metadata READ metadataObj CONSTANT)
     Q_PROPERTY(QObject *homeRoster READ homeRosterObj CONSTANT)
@@ -88,6 +91,17 @@ public:
     // vx/vy in video pixel coordinates; team 0 = home, 1 = away.
     Q_INVOKABLE void addTag(double vx, double vy, int team, int rosterRow);
 
+    // Tagging mutations routed here so undo/redo can capture them.
+    Q_INVOKABLE void removeTag(int row);
+    Q_INVOKABLE void assignTrack(const QString &key, int number,
+                                 const QString &name, int team);
+    Q_INVOKABLE void clearTrackAssignment(const QString &key);
+
+    bool canUndo() const { return !m_undoStack.isEmpty(); }
+    bool canRedo() const { return !m_redoStack.isEmpty(); }
+    Q_INVOKABLE void undo();
+    Q_INVOKABLE void redo();
+
     Q_INVOKABLE bool saveProject();
 
 signals:
@@ -97,6 +111,7 @@ signals:
     void frameSerialChanged();
     void playbackFpsChanged();
     void dirtyChanged();
+    void undoChanged();
     void errorChanged();
 
 private:
@@ -106,6 +121,9 @@ private:
     void loadProjectIfPresent();
     void applyLineups(const QVariantMap &lineups);
     QString projectDir() const;
+
+    void pushCommand(const QVariantMap &cmd);
+    void applyCommand(const QVariantMap &cmd, bool isUndo);
 
     VideoEngine       *m_engine{nullptr};
     FrameProvider     *m_frameProvider{nullptr};   // owned by the QML engine
@@ -133,6 +151,9 @@ private:
     double  m_playbackFps{0.0};   // 0 = native rate
     bool    m_dirty{false};
     QString m_lastError;
+
+    QVector<QVariantMap> m_undoStack;
+    QVector<QVariantMap> m_redoStack;
 };
 
 #endif

@@ -1,6 +1,7 @@
 #include "AppController.h"
 #include "FrameProvider.h"
 #include "MatchManager.h"
+#include "TrackingManager.h"
 
 #include <QGuiApplication>
 #include <QQmlApplicationEngine>
@@ -129,6 +130,63 @@ static int runMatchOp(const QString &videoPath, const QString &op)
     return QCoreApplication::exec();
 }
 
+// Headless: propagate the manual track assignments across all chunks and
+// write the per-chunk metadata files.
+static int runInferIds(const QString &videoPath)
+{
+    cv::VideoCapture cap(videoPath.toStdString());
+    double fps = cap.isOpened() ? cap.get(cv::CAP_PROP_FPS) : 25.0;
+    if (fps <= 0.0 || fps > 240.0) fps = 25.0;
+    const int total = cap.isOpened()
+        ? static_cast<int>(cap.get(cv::CAP_PROP_FRAME_COUNT)) : 0;
+    cap.release();
+
+    MatchManager match;
+    match.setVideo(videoPath, fps, total);
+    TrackingManager tracking;
+    tracking.setSource(videoPath);
+    tracking.loadFromChunkCsvs(match.matchDir() + QStringLiteral("/video_chunks"),
+                               total / fps, match.excludedRangesSec());
+    if (!tracking.hasDetections()) {
+        std::fprintf(stderr, "error: no chunk tracking data\n");
+        return 1;
+    }
+    const int inferred = tracking.inferIdentities(true, 0.0);
+    std::fprintf(stdout, "inferred %d identities from manual assignments\n", inferred);
+    std::fflush(stdout);
+    return 0;
+}
+
+// Headless: run the live Tracking-tab inference (same code path, queued
+// snapshots included) so memory/CPU behavior can be profiled externally.
+static int runLiveTracking(const QString &videoPath)
+{
+    cv::VideoCapture cap(videoPath.toStdString());
+    double fps = cap.isOpened() ? cap.get(cv::CAP_PROP_FPS) : 25.0;
+    if (fps <= 0.0 || fps > 240.0) fps = 25.0;
+    const int total = cap.isOpened()
+        ? static_cast<int>(cap.get(cv::CAP_PROP_FRAME_COUNT)) : 0;
+    cap.release();
+
+    MatchManager match;
+    match.setVideo(videoPath, fps, total);
+    TrackingManager tracking;
+    tracking.setSource(videoPath);
+    tracking.setExclusions(match.excludedFrameRanges());
+
+    QObject::connect(&tracking, &TrackingManager::snapshotChanged, [&tracking]() {
+        std::fprintf(stdout, "progress %.1f%%  tracked %d\n",
+                     tracking.progress() * 100.0, tracking.playersTracked());
+        std::fflush(stdout);
+    });
+    QObject::connect(&tracking, &TrackingManager::runningChanged, [&tracking]() {
+        if (!tracking.isRunningInference())
+            QCoreApplication::exit(0);
+    });
+    tracking.toggleRun();
+    return QCoreApplication::exec();
+}
+
 int main(int argc, char *argv[])
 {
     QGuiApplication app(argc, argv);
@@ -137,6 +195,10 @@ int main(int argc, char *argv[])
 
     {
         const QStringList args = app.arguments();
+        if (args.size() >= 3 && args.at(1) == QLatin1String("--live-track"))
+            return runLiveTracking(args.at(2));
+        if (args.size() >= 3 && args.at(1) == QLatin1String("--infer-ids"))
+            return runInferIds(args.at(2));
         if (args.size() >= 3 && args.at(1) == QLatin1String("--extract-lineups"))
             return runExtractLineups(args.at(2));
         if (args.size() >= 3 && args.at(1) == QLatin1String("--dump-exclusions"))

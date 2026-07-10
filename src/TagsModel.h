@@ -6,6 +6,7 @@
 
 struct TagEvent
 {
+    int     id{0};       // stable identity for undo/redo
     int     frame{0};
     QString timecode;
     int     playerNumber{0};
@@ -44,8 +45,12 @@ public:
     QVariant data(const QModelIndex &index, int role) const override;
     QHash<int, QByteArray> roleNames() const override;
 
-    void addTag(const TagEvent &tag);
+    // Returns the tag id (assigned if the tag came without one).
+    int addTag(const TagEvent &tag);
+    void insertTag(int row, const TagEvent &tag);
     Q_INVOKABLE void removeTag(int row);
+    int rowById(int id) const;
+    bool removeById(int id);
 
     const QVector<TagEvent> &tags() const { return m_tags; }
 
@@ -58,6 +63,7 @@ signals:
 
 private:
     QVector<TagEvent> m_tags;
+    int m_nextId{1};
 };
 
 #endif

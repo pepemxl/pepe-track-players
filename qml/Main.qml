@@ -38,6 +38,18 @@ ApplicationWindow {
         enabled: root.activeTab === 0
         onActivated: App.seekRelative(5)
     }
+    // Tagging undo/redo — Video tab only, so Metadata text fields keep
+    // their native editing undo.
+    Shortcut {
+        sequence: StandardKey.Undo
+        enabled: root.activeTab === 0
+        onActivated: App.undo()
+    }
+    Shortcut {
+        sequences: ["Ctrl+Y", "Ctrl+Shift+Z"]
+        enabled: root.activeTab === 0
+        onActivated: App.redo()
+    }
 
     Column {
         anchors.fill: parent

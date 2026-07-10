@@ -250,6 +250,46 @@ Rectangle {
                 enabled2: match.hasLineupMarkers
                 onTriggered: match.extractLineups()
             }
+            OpButton {
+                width: parent.width
+                label: "Infer IDs · this frame"
+                enabled2: App.tracking.hasDetections
+                onTriggered: App.tracking.inferIdentities(false, App.positionSec)
+            }
+            OpButton {
+                width: parent.width
+                label: "Infer IDs · all chunks"
+                done: App.tracking.inferredCount > 0
+                enabled2: App.tracking.hasDetections
+                onTriggered: App.tracking.inferIdentities(true, App.positionSec)
+            }
+
+            // Inference result + clear
+            Item {
+                width: parent.width
+                height: 16
+                visible: App.tracking.inferredCount > 0
+                Text {
+                    anchors.left: parent.left
+                    text: "≈ " + App.tracking.inferredCount + " inferred identities"
+                    color: Theme.greenBright
+                    font { family: Theme.fontMono; pixelSize: 10 }
+                }
+                Text {
+                    anchors.right: parent.right
+                    text: "clear"
+                    color: clearInfMouse.containsMouse ? Theme.red : Theme.textDim
+                    font { family: Theme.fontUi; pixelSize: 10; weight: Font.DemiBold }
+                    MouseArea {
+                        id: clearInfMouse
+                        anchors.fill: parent
+                        anchors.margins: -4
+                        hoverEnabled: true
+                        cursorShape: Qt.PointingHandCursor
+                        onClicked: App.tracking.clearInferred()
+                    }
+                }
+            }
 
             // Progress / error
             Column {
