@@ -53,6 +53,19 @@ transporte + strip de calidad) y rail derecho de tags.
 - Marcadores de tag (`P<num>`) se dibujan sobre el video para tags a ±1 s
   del frame actual (los roles `x`/`y` del modelo se leen como `model.x`
   para no chocar con la geometría del delegate).
+- Cajas de detección del Track chunks superpuestas al video durante la
+  reproducción (`App.tracking.detectionsAt(App.positionSec)`): borde verde
+  (conf ≥ 0.5) o amarillo, con etiqueta `T<id>`; chip
+  "▣ DETECTIONS ON/OFF" bajo el badge de frame para alternarlas.
+- Click **dentro de una caja** → el dropdown pasa a modo
+  "ASSIGN PLAYER — TRACK <key>": elegir jugador asigna el track
+  (`assignTrack`) en vez de crear un tag posicional; la caja toma el color
+  del equipo y muestra `P<dorsal>`. Click fuera de las cajas → tagging
+  posicional normal (círculo).
+- **Click derecho sobre una caja**: si está asignada, la desasigna
+  (`clearAssignment`, vuelve a `T<id>`); si no, muestra un toast con su
+  track (`track 002-T31 · conf 0.85`). El toast aparece abajo al centro
+  del video y se desvanece solo.
 - Transporte: play/pausa, timecode, scrubber arrastrable
   (`App.seekFrac`), ticks de colores de los frame markers, duración total,
   y el selector de velocidad: chip `native ▾` que abre un popup con
@@ -60,7 +73,8 @@ transporte + strip de calidad) y rail derecho de tags.
   `App.playbackFps`; el chip se pinta verde cuando hay tasa fija activa).
 - Strip "FRAME TRACKING QUALITY": 90 chips desde `App.tracking.frameChips`.
 - Rail derecho: lista de tags (click → seek al frame, × borra), resaltando
-  los cercanos al frame actual.
+  los cercanos al frame actual; en su encabezado, botones ↶/↷ de
+  undo/redo del tagging (también `Ctrl+Z` / `Ctrl+Y` en el tab Video).
 
 ### VideoOpsPanel.qml
 Panel izquierdo colapsable (252 px ↔ 32 px, animado).
@@ -68,9 +82,11 @@ Panel izquierdo colapsable (252 px ↔ 32 px, animado).
 - "FRAME MARKERS · at frame N": grid 2×4 de botones (uno por
   `Theme.markerTypes`) que llaman `App.match.addMarker(type,
   App.currentFrame)`; lista de marcadores (click → seek, × borra).
-- "OPERATIONS": tres `OpButton` (componente inline con estado ✓ done):
-  `preprocess()`, `createChunks()`, `trackChunks()` — este último se
-  habilita solo con `chunkCount > 0`. Barra de progreso + label + Cancel
+- "OPERATIONS": `OpButton`s (componente inline con estado ✓ done):
+  `preprocess()`, `createChunks()`, `trackChunks()` (habilitado con
+  `chunkCount > 0`), `extractLineups()` (con marcadores de lineup), e
+  **Infer IDs · this frame / all chunks** (`App.tracking.inferIdentities`)
+  con contador de inferidas y "clear". Barra de progreso + label + Cancel
   mientras `opRunning`; errores en rojo desde `lastError`.
 
 ### PlayerDropdown.qml

@@ -42,6 +42,15 @@ Fachada principal. Posee el motor de video, los modelos y los managers.
   añade coordenadas de cancha en metros (`imageToPitch`).
 - `saveProject() → bool` — escribe `project.json`, `tags.csv` y `tracks.csv`
   en `<carpeta del video>/<nombre>_project/`; limpia `dirty`.
+- **Undo/redo de tagging** — `undo()` / `redo()` (invocables) +
+  `canUndo`/`canRedo`. Stack de comandos (máx. 100) que cubre: agregar tag,
+  borrar tag, asignar track y desasignar track. Por eso las mutaciones se
+  rutean por `AppController`: `removeTag(row)`, `assignTrack(key, number,
+  name, team)` y `clearTrackAssignment(key)` capturan el estado previo
+  antes de aplicar. Los tags llevan un `id` estable (`TagEvent::id`) para
+  deshacer/rehacer sin depender de índices. El historial se limpia al
+  abrir otro video. UI: `Ctrl+Z` / `Ctrl+Y`/`Ctrl+Shift+Z` (solo tab
+  Video) y botones ↶/↷ en el rail de tags.
 
 ---
 
@@ -158,6 +167,41 @@ completo, detecta cada 5 frames y asocia por IoU (greedy, umbral 0.2).
 - El worker emite `snapshotReady(...)` (queued) cada ~300 ms; el hilo GUI
   aplica el snapshot y reenvía `tracksUpdated(QVariantList)` al
   `TracksModel`.
+- `loadFromChunkCsvs(chunksDir, durationSec, excludedSec)` — puebla el tab
+  desde los CSVs persistidos del Track chunks (stats, chips de 90 buckets
+  y tabla de tracks con ids `NNN-Txx` por chunk, top 200 por frames).
+  `AppController` lo llama al abrir un video con status `tracked` y al
+  terminar un Track chunks; no hace nada si hay una corrida en vivo.
+  Además indexa cada detección (x,y,w,h,conf) por slot de 0.1 s.
+- `detectionsAt(sec)` (invocable) + `hasDetections` — cajas detectadas en
+  la posición de reproducción, para el overlay del reproductor (la vista
+  Video las dibuja con un toggle "DETECTIONS ON/OFF"). Cada caja incluye
+  su `key` de track (`NNN-Txx`) y, si está asignada, el jugador.
+- `assignTrack(key, number, name, team)` / `clearAssignment(key)`
+  (invocables) — asigna un jugador del roster a un chunk-track: sus cajas
+  pasan a mostrar `P<dorsal>` con el color del equipo, la tabla del tab
+  Tracking muestra `dorsal · nombre`, y todo persiste en
+  `<matchDir>/track_assignments.json` (se recarga con los CSVs). Cada
+  cambio reescribe la metadata del chunk afectado (ver abajo).
+- `inferIdentities(allChunks, currentSec)` / `clearInferred()` /
+  `inferredCount` — **inferencia de identidades**: propaga las
+  asignaciones manuales a otros tracks por continuidad espacial, con dos
+  mecanismos encadenables (pasadas hasta converger):
+  - *Fronteras de chunk*: IoU ≥ 0.2 entre el último box del track
+    identificado y el primero de los tracks del chunk vecino (±3 s).
+  - *Fusión de tracks rotos dentro del chunk*: cuando un track
+    identificado muere y otro nace cerca poco después (gap ≤ 2 s,
+    distancia de centros ≤ 1.2× la altura del box, alturas comparables),
+    hereda la identidad — en ambas direcciones (muerte→nacimiento y
+    nacimiento→muerte previa).
+  - *Restricción física*: todos los tracks con una misma identidad deben
+    ser disjuntos en el tiempo (tolerancia de 1.5 s para duplicados
+    momentáneos); esto evita que las cadenas "deriven" a otros jugadores.
+  Con `allChunks=false` solo conserva las inferencias del chunk de
+  `currentSec`. Las inferidas se distinguen de las manuales (`≈` en tabla
+  y overlay) y una asignación manual siempre las supersede. Escribe
+  `<matchDir>/video_chunks_metadata/video_metadata_part_<NNN>.json` con
+  todas las asignaciones del chunk (`source: manual | inferred`).
 
 ---
 
@@ -208,7 +252,9 @@ sourcePath, matchDir, commercialsSec)`.
   Además escribe `video_chunks/chunks.json` con el rango de cada chunk
   (`number`, `file`, `frames`, `start_sec`, `end_sec`).
 - `runTrack()` — por cada chunk corre `YoloDetector` frame a frame con un
-  tracker IoU local (los tracks no cruzan chunks) y escribe
+  tracker IoU local (los tracks no cruzan chunks; un track sin match por
+  más de 1.5 s muere y no puede re-capturar detecciones — el jugador que
+  reaparece es un track nuevo) y escribe
   `video_part_<NNN>.csv` con
   `frame,time_sec,track_id,x,y,w,h,conf,chunk_start_sec,chunk_end_sec`
   (`time_sec` absoluto; `chunk_*` = rango real del chunk, con el fin
@@ -246,3 +292,5 @@ sourcePath, matchDir, commercialsSec)`.
   (y `chunks.json`). Ojo: borra los CSVs existentes de ese partido.
 - `pepe_track_players.exe --track-chunks <video>` — regenera los CSVs de
   tracking por chunk (respeta las exclusiones de marcadores).
+- `pepe_track_players.exe --infer-ids <video>` — corre la inferencia de
+  identidades sobre todos los chunks y escribe la metadata por chunk.

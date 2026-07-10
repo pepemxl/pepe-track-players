@@ -67,6 +67,8 @@ Un registro por video abierto. `status` avanza:
 | `preprocessed_20fps.mp4` | Video fuente re-muestreado a 20 fps (mp4v). |
 | `lineups.json` | Resultado del OCR de alineaciones: `{ "teamA": [{number,name}...], "teamB": [...], "teamNameA": "ARGENTINA", "teamNameB": "" }`. Al abrir el video en la GUI se aplica a los rosters/nombres de Metadata **si es más reciente** que el `project.json` guardado (las ediciones manuales ganan). |
 | `lineups/<tipo>_f<frame>.bmp` | Frames capturados para el OCR. |
+| `track_assignments.json` | Jugadores asignados a chunk-tracks (click dentro de una caja en el reproductor): `{ "assignments": { "002-T31": { "number": 10, "name": "L. MESSI", "team": 0 } } }`. |
+| `video_chunks_metadata/video_metadata_part_<NNN>.json` | Asignaciones por chunk (manuales + inferidas): `{ "chunk": 3, "file": "video_part_003.mp4", "generated": "...", "assignments": { "003-T717": { "number": 10, "name": "LIONEL MESSI", "team": 0, "source": "manual" }, "003-T821": { ..., "source": "inferred" } } }`. Se regenera al asignar/desasignar y al correr la inferencia de identidades. |
 | `video_chunks/chunks.json` | Índice de chunks: por chunk `number`, `file`, `frames`, `start_sec`, `end_sec` (tiempo absoluto del video; el último chunk suele ser parcial), más `fps` y `chunk_seconds` globales. |
 | `video_chunks/video_part_<NNN>.mp4` | Chunks de 1 minuto a 10 fps (600 frames), numerados `001, 002, …` desde el preprocesado si existe. |
 | `video_chunks/video_part_<NNN>.csv` | Tracking del chunk correspondiente. |

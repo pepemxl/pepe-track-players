@@ -7,10 +7,10 @@ jugadores de fútbol sobre video. UI con layout tipo IDE: reproductor central + 
 
 | Sección | Qué hace |
 |---|---|
-| **Video** | Reproductor OpenCV (play/pausa con `Space`, scrub, ←/→ = ±5 s, timecode, selector de velocidad: nativa o 1/5/10/20/30/60/120 frames/s). Click sobre el video abre el dropdown de tagging con el roster; cada tag guarda frame, coordenadas de video y — si hay homografía — coordenadas de cancha en metros. Strip de calidad de tracking por frame. Panel izquierdo colapsable de operaciones (ver abajo). |
+| **Video** | Reproductor OpenCV (play/pausa con `Space`, scrub, ←/→ = ±5 s, timecode, selector de velocidad: nativa o 1/5/10/20/30/60/120 frames/s). Si el partido tiene Track chunks hecho, las posiciones detectadas se dibujan sobre el video durante la reproducción (toggle "DETECTIONS"). Click sobre el video abre el dropdown de tagging con el roster; cada tag guarda frame, coordenadas de video y — si hay homografía — coordenadas de cancha en metros. Strip de calidad de tracking por frame. Panel izquierdo colapsable de operaciones (ver abajo). |
 | **Homography** | Puntos A/B/C/D seleccionables (panel derecho) y colocables con click sobre el frame. Recompute H resuelve la homografía imagen→cancha (105×68 m, DLT de 4 puntos), reporta error de reproyección y estado VERIFIED. Overlay de quad + diagonales + línea media. Stepper de frames ‹ › y saltos rápidos. |
 | **Metadata** | Formulario del partido (liga, temporada, fecha, sede, árbitro) y tablas editables de roster de ambos equipos (agregar / editar en línea / borrar). |
-| **Tracking** | Inferencia offline sobre todo el video con YOLOv8n ONNX (`cv::dnn`, clase person) + asociación IoU. Start/Stop, progreso, stat cards, status por frame (90 buckets) y tabla de tracks (frames, confianza, estado). |
+| **Tracking** | Inferencia con YOLOv8n ONNX (`cv::dnn`, clase person) + asociación IoU. Start/Stop, progreso, stat cards, status por frame (90 buckets) y tabla de tracks (frames, confianza, estado). Si el partido ya tiene Track chunks hecho (panel de Video), el tab se puebla automáticamente desde esos CSVs al abrir el video. |
 
 El chip del top bar indica `PROJECT SAVED` / `UNSAVED CHANGES`; click (o
 `Ctrl+S`) guarda `project.json`, `tags.csv` y `tracks.csv` en
