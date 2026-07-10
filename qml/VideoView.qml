@@ -157,8 +157,8 @@ Item {
 
                     // Scrubber
                     Item {
-                        width: parent.width - 34 - 14 * 3
-                               - 100 - durText.implicitWidth
+                        width: parent.width - 34 - 14 * 4
+                               - 100 - durText.implicitWidth - speedBtn.width
                         height: 34
                         anchors.verticalCenter: parent.verticalCenter
 
@@ -217,6 +217,95 @@ Item {
                         color: Theme.textFaint
                         font { family: Theme.fontMono; pixelSize: 12 }
                         anchors.verticalCenter: parent.verticalCenter
+                    }
+
+                    // Playback rate selector (native, or fixed frames/s)
+                    Rectangle {
+                        id: speedBtn
+                        width: speedLabel.implicitWidth + 24
+                        height: 26
+                        radius: 6
+                        color: speedMouse.containsMouse ? Theme.borderHi : Theme.surfaceHi
+                        border.color: App.playbackFps > 0 ? "#5930d980" : Theme.border2
+                        border.width: 1
+                        anchors.verticalCenter: parent.verticalCenter
+
+                        Text {
+                            id: speedLabel
+                            anchors.centerIn: parent
+                            text: App.playbackFps > 0
+                                ? App.playbackFps.toFixed(0) + " fps ▾"
+                                : "native ▾"
+                            color: App.playbackFps > 0 ? Theme.greenBright : Theme.textMid
+                            font { family: Theme.fontMono; pixelSize: 11 }
+                        }
+                        MouseArea {
+                            id: speedMouse
+                            anchors.fill: parent
+                            hoverEnabled: true
+                            cursorShape: Qt.PointingHandCursor
+                            onClicked: speedMenu.open()
+                        }
+
+                        Popup {
+                            id: speedMenu
+                            x: speedBtn.width - width
+                            y: -height - 6
+                            width: 168
+                            padding: 6
+                            background: Rectangle {
+                                color: "#1b1f26"
+                                border.color: Theme.borderHi
+                                border.width: 1
+                                radius: 8
+                            }
+                            contentItem: Column {
+                                spacing: 2
+                                Repeater {
+                                    model: [0, 1, 5, 10, 20, 30, 60, 120]
+                                    delegate: Rectangle {
+                                        required property var modelData
+                                        readonly property bool current:
+                                            Math.abs(App.playbackFps - modelData) < 0.01
+                                        width: parent.width
+                                        height: 26
+                                        radius: 5
+                                        color: rateMouse.containsMouse ? Theme.surfaceHi : "transparent"
+                                        Row {
+                                            anchors.verticalCenter: parent.verticalCenter
+                                            anchors.left: parent.left
+                                            anchors.leftMargin: 8
+                                            spacing: 7
+                                            Text {
+                                                text: current ? "✓" : " "
+                                                color: Theme.green
+                                                font { family: Theme.fontMono; pixelSize: 11 }
+                                                anchors.verticalCenter: parent.verticalCenter
+                                            }
+                                            Text {
+                                                text: modelData === 0
+                                                    ? "native" + (App.videoLoaded
+                                                        ? " (" + App.fps.toFixed(0) + " fps)" : "")
+                                                    : modelData + " frames/s"
+                                                color: current ? Theme.greenBright : Theme.text
+                                                font { family: Theme.fontMono; pixelSize: 11 }
+                                                anchors.verticalCenter: parent.verticalCenter
+                                            }
+                                        }
+                                        MouseArea {
+                                            id: rateMouse
+                                            anchors.fill: parent
+                                            hoverEnabled: true
+                                            cursorShape: Qt.PointingHandCursor
+                                            onClicked: {
+                                                App.playbackFps = modelData
+                                                speedMenu.close()
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
 
