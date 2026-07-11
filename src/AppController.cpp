@@ -539,6 +539,10 @@ void AppController::onFrameReady(const QImage &frame, int frameIndex, double pos
     ++m_frameSerial;
     m_currentFrame = frameIndex;
     m_positionSec = posSec;
+    // Keep the per-frame homography (and the working overlay points) in sync
+    // with the displayed frame so the pitch overlay and tagging follow the
+    // moving camera between calibration keyframes.
+    m_homography->setCurrentFrame(frameIndex);
     emit frameSerialChanged();
     emit positionChanged();
 }

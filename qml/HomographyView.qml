@@ -143,7 +143,11 @@ Item {
                                 anchors.verticalCenter: parent.verticalCenter
                             }
                             Text {
-                                text: App.homography.verified ? "HOMOGRAPHY VERIFIED" : "NEEDS RECOMPUTE"
+                                text: App.homography.atKeyframe
+                                        ? "KEYFRAME · FRAME " + App.homography.currentFrame
+                                    : App.homography.verified
+                                        ? "INTERPOLATED · " + App.homography.keyframeCount + " KF"
+                                        : "NEEDS RECOMPUTE"
                                 color: App.homography.verified ? "#e6f5ec" : "#f5ecd0"
                                 font { family: Theme.fontMono; pixelSize: 11; weight: Font.DemiBold }
                                 anchors.verticalCenter: parent.verticalCenter
@@ -221,6 +225,18 @@ Item {
                                 height: parent.height
                                 radius: 3
                                 color: Theme.green
+                            }
+                            // Calibration keyframe ticks.
+                            Repeater {
+                                model: App.homography.keyframes
+                                delegate: Rectangle {
+                                    required property var modelData
+                                    x: (App.totalFrames > 1
+                                        ? homoTrack.width * modelData.frame / (App.totalFrames - 1) : 0) - 1.5
+                                    y: -5
+                                    width: 3; height: 16; radius: 1
+                                    color: Theme.orange
+                                }
                             }
                         }
                         MouseArea {
@@ -306,7 +322,7 @@ Item {
                         delegate: Rectangle {
                             required property var modelData
                             width: parent.width
-                            height: 38
+                            height: 50
                             radius: 6
                             color: view.selectedPointId === modelData.id ? "#1fffb46b" : "transparent"
 
@@ -316,44 +332,99 @@ Item {
                                 color: "#242830"
                             }
 
-                            Row {
-                                anchors.verticalCenter: parent.verticalCenter
+                            // Line 1: badge + image coords (click to place point)
+                            Item {
+                                id: line1
+                                anchors.top: parent.top
                                 anchors.left: parent.left
+                                anchors.right: parent.right
                                 anchors.leftMargin: 6
-                                spacing: 10
-
-                                Rectangle {
-                                    width: 20; height: 20; radius: 5
-                                    color: "#33ffb46b"
-                                    border.color: Theme.orange
-                                    border.width: 1
+                                anchors.rightMargin: 6
+                                height: 26
+                                Row {
                                     anchors.verticalCenter: parent.verticalCenter
+                                    anchors.left: parent.left
+                                    spacing: 10
+                                    Rectangle {
+                                        width: 20; height: 20; radius: 5
+                                        color: "#33ffb46b"
+                                        border.color: Theme.orange
+                                        border.width: 1
+                                        anchors.verticalCenter: parent.verticalCenter
+                                        Text {
+                                            text: modelData.id
+                                            color: Theme.orange
+                                            font { family: Theme.fontMono; pixelSize: 10; weight: Font.Bold }
+                                            anchors.centerIn: parent
+                                        }
+                                    }
                                     Text {
-                                        text: modelData.id
-                                        color: Theme.orange
-                                        font { family: Theme.fontMono; pixelSize: 10; weight: Font.Bold }
-                                        anchors.centerIn: parent
+                                        text: "img (" + Math.round(modelData.ix) + ", " + Math.round(modelData.iy) + ")"
+                                        color: Theme.textMuted
+                                        font { family: Theme.fontMono; pixelSize: 11 }
+                                        anchors.verticalCenter: parent.verticalCenter
                                     }
                                 }
                                 Text {
-                                    text: "img (" + Math.round(modelData.ix) + ", " + Math.round(modelData.iy) + ")"
-                                    color: Theme.textMuted
-                                    font { family: Theme.fontMono; pixelSize: 11 }
+                                    anchors.right: parent.right
                                     anchors.verticalCenter: parent.verticalCenter
+                                    text: view.selectedPointId === modelData.id ? "placing…" : "place"
+                                    color: view.selectedPointId === modelData.id ? Theme.greenBright : Theme.textFaint
+                                    font { family: Theme.fontUi; pixelSize: 10; weight: Font.DemiBold }
                                 }
-                                Text {
-                                    text: "pitch (" + modelData.px + ", " + modelData.py + ")"
-                                    color: Theme.textMuted
-                                    font { family: Theme.fontMono; pixelSize: 11 }
-                                    anchors.verticalCenter: parent.verticalCenter
+                                MouseArea {
+                                    anchors.fill: parent
+                                    cursorShape: Qt.PointingHandCursor
+                                    onClicked: view.selectedPointId =
+                                        view.selectedPointId === modelData.id ? "" : modelData.id
                                 }
                             }
 
-                            MouseArea {
-                                anchors.fill: parent
-                                cursorShape: Qt.PointingHandCursor
-                                onClicked: view.selectedPointId =
-                                    view.selectedPointId === modelData.id ? "" : modelData.id
+                            // Line 2: pitch-landmark chip (click to reassign)
+                            Rectangle {
+                                anchors.top: line1.bottom
+                                anchors.left: parent.left
+                                anchors.right: parent.right
+                                anchors.leftMargin: 6
+                                anchors.rightMargin: 6
+                                height: 20
+                                radius: 5
+                                color: lmMouse.containsMouse ? Theme.surfaceHi : "transparent"
+                                Row {
+                                    anchors.verticalCenter: parent.verticalCenter
+                                    anchors.left: parent.left
+                                    anchors.leftMargin: 4
+                                    anchors.right: parent.right
+                                    anchors.rightMargin: 4
+                                    spacing: 6
+                                    Text {
+                                        text: "↳"
+                                        color: Theme.textFaint
+                                        font.pixelSize: 11
+                                        anchors.verticalCenter: parent.verticalCenter
+                                    }
+                                    Text {
+                                        width: parent.width - 34
+                                        elide: Text.ElideRight
+                                        text: modelData.landmark
+                                        color: Theme.textMid
+                                        font { family: Theme.fontMono; pixelSize: 10 }
+                                        anchors.verticalCenter: parent.verticalCenter
+                                    }
+                                    Text {
+                                        text: "▾"
+                                        color: Theme.textDim
+                                        font.pixelSize: 10
+                                        anchors.verticalCenter: parent.verticalCenter
+                                    }
+                                }
+                                MouseArea {
+                                    id: lmMouse
+                                    anchors.fill: parent
+                                    hoverEnabled: true
+                                    cursorShape: Qt.PointingHandCursor
+                                    onClicked: landmarkPicker.openFor(modelData.id)
+                                }
                             }
                         }
                     }
@@ -386,6 +457,107 @@ Item {
                             font { family: Theme.fontUi; pixelSize: 11 }
                             lineHeight: 1.3
                             anchors.verticalCenter: parent.verticalCenter
+                        }
+                    }
+                }
+
+                // Calibration keyframes (per-frame homography via interpolation)
+                Column {
+                    width: parent.width
+                    spacing: 6
+
+                    Item {
+                        width: parent.width
+                        height: 16
+                        Text {
+                            anchors.left: parent.left
+                            text: "KEYFRAMES · " + App.homography.keyframeCount
+                            color: Theme.textDim
+                            font { family: Theme.fontUi; pixelSize: 11; weight: Font.Bold; letterSpacing: 0.5 }
+                        }
+                        Text {
+                            anchors.right: parent.right
+                            text: App.homography.atKeyframe ? "editing this frame" : "recompute to add"
+                            color: Theme.textFaint
+                            font { family: Theme.fontUi; pixelSize: 11 }
+                        }
+                    }
+
+                    Column {
+                        width: parent.width
+                        spacing: 4
+
+                        Repeater {
+                            model: App.homography.keyframes
+                            delegate: Rectangle {
+                                required property var modelData
+                                readonly property bool cur: modelData.frame === App.homography.currentFrame
+                                width: parent.width
+                                height: 30
+                                radius: 6
+                                color: cur ? "#1c2b22"
+                                     : (kfMouse.containsMouse ? Theme.borderHi : Theme.surfaceHi)
+                                border.color: cur ? "#5930d980" : Theme.border2
+                                border.width: 1
+
+                                Row {
+                                    anchors.verticalCenter: parent.verticalCenter
+                                    anchors.left: parent.left
+                                    anchors.leftMargin: 9
+                                    spacing: 8
+                                    Rectangle {
+                                        width: 6; height: 6; radius: 3
+                                        color: Theme.orange
+                                        anchors.verticalCenter: parent.verticalCenter
+                                    }
+                                    Text {
+                                        text: "frame " + modelData.frame
+                                        color: Theme.textBright
+                                        font { family: Theme.fontMono; pixelSize: 11; weight: Font.DemiBold }
+                                        anchors.verticalCenter: parent.verticalCenter
+                                    }
+                                    Text {
+                                        text: modelData.reproj.toFixed(1) + "px"
+                                        color: Theme.textDim
+                                        font { family: Theme.fontMono; pixelSize: 10 }
+                                        anchors.verticalCenter: parent.verticalCenter
+                                    }
+                                }
+                                MouseArea {
+                                    id: kfMouse
+                                    anchors.fill: parent
+                                    hoverEnabled: true
+                                    cursorShape: Qt.PointingHandCursor
+                                    onClicked: { App.pause(); App.seekFrame(modelData.frame) }
+                                }
+                                Text {
+                                    text: "×"
+                                    color: kfDelMouse.containsMouse ? Theme.red : Theme.textDim
+                                    font.pixelSize: 14
+                                    anchors.right: parent.right
+                                    anchors.rightMargin: 10
+                                    anchors.verticalCenter: parent.verticalCenter
+                                    MouseArea {
+                                        id: kfDelMouse
+                                        anchors.fill: parent
+                                        anchors.margins: -5
+                                        hoverEnabled: true
+                                        cursorShape: Qt.PointingHandCursor
+                                        onClicked: App.homography.removeKeyframe(modelData.frame)
+                                    }
+                                }
+                            }
+                        }
+
+                        Text {
+                            visible: App.homography.keyframeCount === 0
+                            width: parent.width
+                            wrapMode: Text.WordWrap
+                            text: "No keyframes yet. Place A–D on the video and "
+                                  + "press “Set keyframe” to calibrate this frame."
+                            color: Theme.textFaint
+                            font { family: Theme.fontUi; pixelSize: 11 }
+                            lineHeight: 1.3
                         }
                     }
                 }
@@ -439,7 +611,7 @@ Item {
                         radius: 8
                         color: recomputeMouse.containsMouse ? Theme.greenBright : Theme.green
                         Text {
-                            text: "Recompute H"
+                            text: "Set keyframe"
                             color: "#10231a"
                             font { family: Theme.fontUi; pixelSize: 13; weight: Font.Bold }
                             anchors.centerIn: parent
