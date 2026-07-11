@@ -2,6 +2,7 @@
 
 #include "FrameProvider.h"
 #include "HomographyManager.h"
+#include "HomographyWorker.h"
 #include "MatchMetadata.h"
 #include "RosterModel.h"
 #include "TagsModel.h"
@@ -625,6 +626,11 @@ void AppController::loadProjectIfPresent()
     m_awayRoster->fromJson(root[QStringLiteral("awayRoster")].toArray());
     m_tags->fromJson(root[QStringLiteral("tags")].toArray());
     m_homography->fromJson(root[QStringLiteral("homography")].toObject());
+    // Attach a previously computed dense propagation track, if any.
+    m_homography->clearPropagation();
+    const QString dense = denseTrackPath();
+    if (!dense.isEmpty() && QFile::exists(dense))
+        m_homography->loadDenseTrack(dense);
     m_dirty = false;
     emit dirtyChanged();
 }
@@ -691,4 +697,81 @@ bool AppController::saveProject()
     m_dirty = false;
     emit dirtyChanged();
     return true;
+}
+
+QString AppController::denseTrackPath() const
+{
+    const QString dir = projectDir();
+    if (dir.isEmpty())
+        return {};
+    return QDir(dir).filePath(QStringLiteral("homography_dense.bin"));
+}
+
+void AppController::propagateHomography()
+{
+    if (!m_videoLoaded || m_videoPath.isEmpty()) {
+        m_lastError = QStringLiteral("Abre un video antes de propagar");
+        emit errorChanged();
+        return;
+    }
+    const QVector<HomographyManager::Keyframe> &kfs = m_homography->keyframeData();
+    if (kfs.size() < 2) {
+        m_lastError = QStringLiteral("Se necesitan al menos 2 keyframes para propagar");
+        emit errorChanged();
+        return;
+    }
+    if (m_homoWorker && m_homoWorker->isRunning())
+        return;
+
+    QVector<HomographyWorker::Keyframe> wkfs;
+    wkfs.reserve(kfs.size());
+    for (const HomographyManager::Keyframe &k : kfs) {
+        HomographyWorker::Keyframe wk;
+        wk.frame = k.frame;
+        for (int j = 0; j < 4; ++j)
+            wk.img[j] = k.image[j];
+        wkfs.append(wk);
+    }
+
+    QDir().mkpath(projectDir());
+    const QString outPath = denseTrackPath();
+
+    if (!m_homoWorker) {
+        m_homoWorker = new HomographyWorker(this);
+        connect(m_homoWorker, &HomographyWorker::progressChanged, this,
+                [this](double frac, const QString &label) {
+                    m_homography->setPropProgress(frac, label);
+                });
+        connect(m_homoWorker, &HomographyWorker::finished, this,
+                &AppController::onPropagationFinished);
+    }
+
+    m_homography->clearPropagation();
+    m_homography->setPropagating(true, QStringLiteral("Iniciando propagación…"));
+    m_homoWorker->configure(m_videoPath, wkfs, outPath);
+    m_homoWorker->start();
+}
+
+void AppController::cancelPropagation()
+{
+    if (m_homoWorker && m_homoWorker->isRunning())
+        m_homoWorker->requestStop();
+}
+
+void AppController::onPropagationFinished(bool ok, const QString &error,
+                                          int startFrame, int count)
+{
+    Q_UNUSED(startFrame);
+    Q_UNUSED(count);
+    m_homography->setPropagating(false, ok ? QStringLiteral("Propagación completada")
+                                           : error);
+    if (!ok) {
+        if (!error.isEmpty() && error != QStringLiteral("Cancelado")) {
+            m_lastError = error;
+            emit errorChanged();
+        }
+        return;
+    }
+    m_homography->loadDenseTrack(denseTrackPath());
+    markDirty();
 }

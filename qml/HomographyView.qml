@@ -7,6 +7,8 @@ Item {
     id: view
 
     property string selectedPointId: ""
+    // Which reference point (A/B/C/D) the mini-pitch is assigning a landmark to.
+    property string pitchEditId: "A"
 
     function pointById(id) {
         const pts = App.homography.points
@@ -132,23 +134,28 @@ Item {
                         anchors.right: parent.right
                         anchors.margins: 12
                         width: verifyRow.implicitWidth + 20; height: 24; radius: 6
-                        color: App.homography.verified ? "#d91d3a2b" : "#d93a2f16"
+                        color: App.homography.atPropagated ? "#d9122a3f"
+                             : App.homography.verified ? "#d91d3a2b" : "#d93a2f16"
                         Row {
                             id: verifyRow
                             anchors.centerIn: parent
                             spacing: 6
                             Rectangle {
                                 width: 6; height: 6; radius: 3
-                                color: App.homography.verified ? Theme.greenBright : Theme.yellow
+                                color: App.homography.atPropagated ? "#5aa0ff"
+                                     : App.homography.verified ? Theme.greenBright : Theme.yellow
                                 anchors.verticalCenter: parent.verticalCenter
                             }
                             Text {
                                 text: App.homography.atKeyframe
                                         ? "KEYFRAME · FRAME " + App.homography.currentFrame
+                                    : App.homography.atPropagated
+                                        ? "PROPAGATED · FLOW"
                                     : App.homography.verified
                                         ? "INTERPOLATED · " + App.homography.keyframeCount + " KF"
                                         : "NEEDS RECOMPUTE"
-                                color: App.homography.verified ? "#e6f5ec" : "#f5ecd0"
+                                color: App.homography.atPropagated ? "#d7e6ff"
+                                     : App.homography.verified ? "#e6f5ec" : "#f5ecd0"
                                 font { family: Theme.fontMono; pixelSize: 11; weight: Font.DemiBold }
                                 anchors.verticalCenter: parent.verticalCenter
                             }
@@ -226,6 +233,20 @@ Item {
                                 radius: 3
                                 color: Theme.green
                             }
+                            // Propagated (dense flow) range: keyframe span.
+                            Rectangle {
+                                visible: App.homography.propagated && App.homography.keyframeCount >= 2
+                                readonly property var kfs: App.homography.keyframes
+                                readonly property int firstF: kfs.length ? kfs[0].frame : 0
+                                readonly property int lastF: kfs.length ? kfs[kfs.length - 1].frame : 0
+                                x: App.totalFrames > 1
+                                    ? homoTrack.width * firstF / (App.totalFrames - 1) : 0
+                                width: App.totalFrames > 1
+                                    ? homoTrack.width * (lastF - firstF) / (App.totalFrames - 1) : 0
+                                height: parent.height
+                                radius: 3
+                                color: "#5aa0ff"
+                            }
                             // Calibration keyframe ticks.
                             Repeater {
                                 model: App.homography.keyframes
@@ -288,11 +309,198 @@ Item {
 
             Rectangle { width: 1; height: parent.height; color: Theme.border }
 
-            Column {
+            Flickable {
                 anchors.fill: parent
                 anchors.margins: 18
                 anchors.topMargin: 20
-                spacing: 16
+                contentHeight: rcol.height
+                clip: true
+                boundsBehavior: Flickable.StopAtBounds
+
+                Column {
+                    id: rcol
+                    width: parent.width
+                    spacing: 16
+
+                // ---- reference pitch: pick a landmark for a point ----
+                Column {
+                    width: parent.width
+                    spacing: 8
+
+                    Item {
+                        width: parent.width
+                        height: 16
+                        Text {
+                            anchors.left: parent.left
+                            text: "REFERENCE PITCH"
+                            color: Theme.textDim
+                            font { family: Theme.fontUi; pixelSize: 11; weight: Font.Bold; letterSpacing: 0.5 }
+                        }
+                        Text {
+                            anchors.right: parent.right
+                            text: "assign point " + view.pitchEditId
+                            color: Theme.textFaint
+                            font { family: Theme.fontUi; pixelSize: 11 }
+                        }
+                    }
+
+                    // Which point (A/B/C/D) the clicks assign to.
+                    Row {
+                        width: parent.width
+                        spacing: 6
+                        Repeater {
+                            model: ["A", "B", "C", "D"]
+                            delegate: Rectangle {
+                                required property var modelData
+                                readonly property bool sel: view.pitchEditId === modelData
+                                width: (parent.width - 6 * 3) / 4
+                                height: 26
+                                radius: 6
+                                color: sel ? Theme.orange
+                                     : (tgtMouse.containsMouse ? Theme.borderHi : Theme.surfaceHi)
+                                Text {
+                                    anchors.centerIn: parent
+                                    text: modelData
+                                    color: sel ? "#241505" : Theme.textBright
+                                    font { family: Theme.fontMono; pixelSize: 12; weight: Font.Bold }
+                                }
+                                MouseArea {
+                                    id: tgtMouse
+                                    anchors.fill: parent
+                                    hoverEnabled: true
+                                    cursorShape: Qt.PointingHandCursor
+                                    onClicked: view.pitchEditId = modelData
+                                }
+                            }
+                        }
+                    }
+
+                    // Mini pitch (105 x 68) with clickable landmark dots.
+                    Rectangle {
+                        id: miniPitch
+                        width: parent.width
+                        height: width * 68 / 105
+                        radius: 8
+                        color: "#12321f"
+                        border.color: Theme.border
+                        border.width: 1
+
+                        readonly property real pad: 10
+                        function mapX(px) { return pad + px / 105.0 * (width - 2 * pad) }
+                        function mapY(py) { return pad + py / 68.0 * (height - 2 * pad) }
+
+                        Canvas {
+                            id: pitchCanvas
+                            anchors.fill: parent
+                            onWidthChanged: requestPaint()
+                            onHeightChanged: requestPaint()
+                            onPaint: {
+                                const ctx = getContext("2d")
+                                ctx.reset()
+                                ctx.strokeStyle = "#5aa87a"
+                                ctx.lineWidth = 1.2
+                                const mx = miniPitch.mapX, my = miniPitch.mapY
+                                function line(x1, y1, x2, y2) {
+                                    ctx.beginPath(); ctx.moveTo(mx(x1), my(y1))
+                                    ctx.lineTo(mx(x2), my(y2)); ctx.stroke()
+                                }
+                                function rect(x1, y1, x2, y2) {
+                                    ctx.strokeRect(mx(x1), my(y1), mx(x2) - mx(x1), my(y2) - my(y1))
+                                }
+                                // boundary + halfway
+                                rect(0, 0, 105, 68)
+                                line(52.5, 0, 52.5, 68)
+                                // centre circle + spot
+                                const r = (9.15 / 105.0) * (miniPitch.width - 2 * miniPitch.pad)
+                                ctx.beginPath()
+                                ctx.arc(mx(52.5), my(34), r, 0, 2 * Math.PI); ctx.stroke()
+                                function spot(x, y) {
+                                    ctx.beginPath(); ctx.arc(mx(x), my(y), 1.5, 0, 2 * Math.PI)
+                                    ctx.fillStyle = "#5aa87a"; ctx.fill()
+                                }
+                                spot(52.5, 34); spot(11, 34); spot(94, 34)
+                                // penalty + goal areas
+                                rect(0, 13.84, 16.5, 54.16)
+                                rect(88.5, 13.84, 105, 54.16)
+                                rect(0, 24.84, 5.5, 43.16)
+                                rect(99.5, 24.84, 105, 43.16)
+                            }
+                        }
+
+                        // Clickable landmark dots.
+                        Repeater {
+                            model: App.homography.pitchLandmarks()
+                            delegate: Rectangle {
+                                required property var modelData
+                                readonly property bool cur: {
+                                    const p = view.pointById(view.pitchEditId)
+                                    return p && Math.abs(p.px - modelData.px) < 0.05
+                                             && Math.abs(p.py - modelData.py) < 0.05
+                                }
+                                x: miniPitch.mapX(modelData.px) - width / 2
+                                y: miniPitch.mapY(modelData.py) - height / 2
+                                width: dotMouse.containsMouse || cur ? 12 : 8
+                                height: width
+                                radius: width / 2
+                                color: cur ? Theme.orange
+                                     : (dotMouse.containsMouse ? "#cfe9db" : "#8fbfa6")
+                                border.color: "#12321f"
+                                border.width: 1
+                                Behavior on width { NumberAnimation { duration: 90 } }
+                                MouseArea {
+                                    id: dotMouse
+                                    anchors.fill: parent
+                                    anchors.margins: -4
+                                    hoverEnabled: true
+                                    cursorShape: Qt.PointingHandCursor
+                                    onClicked: App.homography.setPitchLandmark(view.pitchEditId,
+                                                                               modelData.key)
+                                }
+                                // tooltip-ish label on hover
+                                Rectangle {
+                                    visible: dotMouse.containsMouse
+                                    anchors.bottom: parent.top
+                                    anchors.horizontalCenter: parent.horizontalCenter
+                                    anchors.bottomMargin: 3
+                                    width: tipText.implicitWidth + 10
+                                    height: 16
+                                    radius: 3
+                                    color: "#0d1f15"
+                                    z: 5
+                                    Text {
+                                        id: tipText
+                                        anchors.centerIn: parent
+                                        text: modelData.label
+                                        color: "#cfe9db"
+                                        font { family: Theme.fontUi; pixelSize: 9 }
+                                    }
+                                }
+                            }
+                        }
+
+                        // A/B/C/D markers at their assigned landmark positions.
+                        Repeater {
+                            model: App.homography.points
+                            delegate: Rectangle {
+                                required property var modelData
+                                readonly property bool active: view.pitchEditId === modelData.id
+                                x: miniPitch.mapX(modelData.px) - width / 2
+                                y: miniPitch.mapY(modelData.py) - height / 2
+                                width: 16; height: 16; radius: 8
+                                color: active ? Theme.greenBright : Theme.orange
+                                border.color: "white"
+                                border.width: active ? 2 : 1
+                                z: 3
+                                Text {
+                                    anchors.centerIn: parent
+                                    text: modelData.id
+                                    color: "#241505"
+                                    font { family: Theme.fontMono; pixelSize: 10; weight: Font.Bold }
+                                }
+                            }
+                        }
+                    }
+                }
 
                 // Point correspondences
                 Column {
@@ -310,7 +518,7 @@ Item {
                         }
                         Text {
                             anchors.right: parent.right
-                            text: "click to select"
+                            text: "place · pick landmark"
                             color: Theme.textFaint
                             font { family: Theme.fontUi; pixelSize: 11 }
                         }
@@ -646,6 +854,225 @@ Item {
                         }
                     }
                 }
+
+                // ---- inter-frame propagation (phase F2, optical flow) ----
+                Column {
+                    width: parent.width
+                    spacing: 8
+
+                    Item {
+                        width: parent.width
+                        height: 16
+                        Text {
+                            anchors.left: parent.left
+                            text: "PROPAGATION · FLOW"
+                            color: Theme.textDim
+                            font { family: Theme.fontUi; pixelSize: 11; weight: Font.Bold; letterSpacing: 0.5 }
+                        }
+                        Text {
+                            anchors.right: parent.right
+                            text: App.homography.propagated ? "dense · active"
+                                : App.homography.keyframeCount >= 2 ? "ready" : "needs 2 KF"
+                            color: App.homography.propagated ? "#8fbfe6" : Theme.textFaint
+                            font { family: Theme.fontUi; pixelSize: 11 }
+                        }
+                    }
+
+                    Text {
+                        width: parent.width
+                        wrapMode: Text.WordWrap
+                        text: "Estimates the real camera motion between keyframes "
+                              + "(LK optical flow + RANSAC) and fills a homography "
+                              + "for every frame in the span."
+                        color: Theme.textFaint
+                        font { family: Theme.fontUi; pixelSize: 11 }
+                        lineHeight: 1.3
+                    }
+
+                    // Progress bar (visible while running).
+                    Rectangle {
+                        visible: App.homography.propagating
+                        width: parent.width
+                        height: 26
+                        radius: 6
+                        color: Theme.surfaceHi
+                        border.color: Theme.border2
+                        border.width: 1
+                        Rectangle {
+                            anchors.left: parent.left
+                            anchors.verticalCenter: parent.verticalCenter
+                            anchors.leftMargin: 2
+                            width: (parent.width - 4) * App.homography.propProgress
+                            height: parent.height - 4
+                            radius: 5
+                            color: "#2f4a6b"
+                        }
+                        Text {
+                            anchors.centerIn: parent
+                            text: App.homography.propLabel + "  ·  "
+                                  + Math.round(App.homography.propProgress * 100) + "%"
+                            color: "#d7e6ff"
+                            font { family: Theme.fontMono; pixelSize: 10 }
+                        }
+                    }
+
+                    Row {
+                        width: parent.width
+                        spacing: 8
+
+                        Rectangle {
+                            width: App.homography.propagated ? (parent.width - 8) / 2 : parent.width
+                            height: 36
+                            radius: 8
+                            readonly property bool on: App.homography.keyframeCount >= 2
+                                                       && !App.homography.propagating
+                            color: !on ? Theme.surfaceHi
+                                 : (propMouse.containsMouse ? "#3d5c82" : "#33507a")
+                            border.color: "#4d6f9c"
+                            border.width: 1
+                            Text {
+                                text: App.homography.propagating ? "Propagating…"
+                                    : App.homography.propagated ? "Re-run flow" : "Propagate (flow)"
+                                color: parent.on ? "#e6f0ff" : Theme.textFaint
+                                font { family: Theme.fontUi; pixelSize: 13; weight: Font.Bold }
+                                anchors.centerIn: parent
+                            }
+                            MouseArea {
+                                id: propMouse
+                                anchors.fill: parent
+                                hoverEnabled: true
+                                enabled: parent.on
+                                cursorShape: enabled ? Qt.PointingHandCursor : Qt.ArrowCursor
+                                onClicked: App.propagateHomography()
+                            }
+                        }
+                        Rectangle {
+                            visible: App.homography.propagated
+                            width: (parent.width - 8) / 2
+                            height: 36
+                            radius: 8
+                            color: clearPropMouse.containsMouse ? Theme.borderHi : Theme.surfaceHi
+                            border.color: Theme.border2
+                            border.width: 1
+                            Text {
+                                text: "Clear"
+                                color: Theme.text
+                                font { family: Theme.fontUi; pixelSize: 13; weight: Font.DemiBold }
+                                anchors.centerIn: parent
+                            }
+                            MouseArea {
+                                id: clearPropMouse
+                                anchors.fill: parent
+                                hoverEnabled: true
+                                cursorShape: Qt.PointingHandCursor
+                                onClicked: App.homography.clearPropagation()
+                            }
+                        }
+                    }
+                }
+                }
+            }
+        }
+    }
+
+    // ---- pitch-landmark picker (per reference point) ----
+    Popup {
+        id: landmarkPicker
+        property string pointId: ""
+        function openFor(id) { pointId = id; open() }
+
+        width: 320
+        height: Math.min(460, view.height - 40)
+        x: Math.round((view.width - width) / 2)
+        y: Math.round((view.height - height) / 2)
+        modal: true
+        dim: true
+        padding: 0
+
+        background: Rectangle {
+            color: "#1b1f26"
+            border.color: Theme.borderHi
+            border.width: 1
+            radius: 10
+        }
+
+        contentItem: Item {
+
+            Item {
+                id: pickerHeader
+                anchors.top: parent.top
+                anchors.left: parent.left
+                anchors.right: parent.right
+                height: 40
+                Text {
+                    anchors.left: parent.left
+                    anchors.leftMargin: 14
+                    anchors.verticalCenter: parent.verticalCenter
+                    text: "PITCH LANDMARK · POINT " + landmarkPicker.pointId
+                    color: Theme.textBright
+                    font { family: Theme.fontUi; pixelSize: 12; weight: Font.Bold; letterSpacing: 0.5 }
+                }
+                Rectangle {
+                    anchors.bottom: parent.bottom
+                    width: parent.width; height: 1; color: Theme.border
+                }
+            }
+
+            ListView {
+                anchors.top: pickerHeader.bottom
+                anchors.left: parent.left
+                anchors.right: parent.right
+                anchors.bottom: parent.bottom
+                clip: true
+                model: App.homography.pitchLandmarks()
+                delegate: Rectangle {
+                    required property var modelData
+                    readonly property bool cur: view.pointById(landmarkPicker.pointId)
+                        && Math.abs(view.pointById(landmarkPicker.pointId).px - modelData.px) < 0.05
+                        && Math.abs(view.pointById(landmarkPicker.pointId).py - modelData.py) < 0.05
+                    width: ListView.view.width
+                    height: 34
+                    color: cur ? "#1c2b22" : (lmRowMouse.containsMouse ? Theme.surfaceHi : "transparent")
+                    Row {
+                        anchors.verticalCenter: parent.verticalCenter
+                        anchors.left: parent.left
+                        anchors.leftMargin: 14
+                        anchors.right: parent.right
+                        anchors.rightMargin: 14
+                        spacing: 8
+                        Text {
+                            text: cur ? "✓" : " "
+                            color: Theme.green
+                            font { family: Theme.fontMono; pixelSize: 11 }
+                            anchors.verticalCenter: parent.verticalCenter
+                        }
+                        Text {
+                            width: parent.width - 120
+                            elide: Text.ElideRight
+                            text: modelData.label
+                            color: cur ? Theme.greenBright : Theme.text
+                            font { family: Theme.fontUi; pixelSize: 12 }
+                            anchors.verticalCenter: parent.verticalCenter
+                        }
+                        Text {
+                            text: "(" + modelData.px + ", " + modelData.py + ")"
+                            color: Theme.textDim
+                            font { family: Theme.fontMono; pixelSize: 10 }
+                            anchors.verticalCenter: parent.verticalCenter
+                        }
+                    }
+                    MouseArea {
+                        id: lmRowMouse
+                        anchors.fill: parent
+                        hoverEnabled: true
+                        cursorShape: Qt.PointingHandCursor
+                        onClicked: {
+                            App.homography.setPitchLandmark(landmarkPicker.pointId, modelData.key)
+                            landmarkPicker.close()
+                        }
+                    }
+                }
+                ScrollBar.vertical: ScrollBar {}
             }
         }
     }

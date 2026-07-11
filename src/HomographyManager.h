@@ -7,6 +7,7 @@
 #include <QPointF>
 #include <QJsonObject>
 #include <QVector>
+#include <array>
 
 // Image<->pitch calibration from the 4 corner correspondences A/B/C/D.
 // Image points are in video pixel coordinates; pitch points in meters
@@ -32,6 +33,14 @@ class HomographyManager : public QObject
     Q_PROPERTY(int keyframeCount READ keyframeCount NOTIFY keyframesChanged)
     Q_PROPERTY(int currentFrame READ currentFrame NOTIFY stateChanged)
     Q_PROPERTY(bool atKeyframe READ atKeyframe NOTIFY stateChanged)
+    // Inter-frame propagation (phase F2): a dense per-frame track computed by
+    // HomographyWorker (optical flow). When present, homographyAt uses it
+    // instead of the linear keyframe interpolation.
+    Q_PROPERTY(bool propagated READ propagated NOTIFY propagationChanged)
+    Q_PROPERTY(bool propagating READ propagating NOTIFY propagationChanged)
+    Q_PROPERTY(double propProgress READ propProgress NOTIFY propagationChanged)
+    Q_PROPERTY(QString propLabel READ propLabel NOTIFY propagationChanged)
+    Q_PROPERTY(bool atPropagated READ atPropagated NOTIFY stateChanged)
 
 public:
     struct Correspondence
@@ -62,6 +71,23 @@ public:
     int keyframeCount() const { return m_keyframes.size(); }
     int currentFrame() const { return m_currentFrame; }
     bool atKeyframe() const;
+
+    bool propagated() const { return !m_dense.isEmpty(); }
+    bool propagating() const { return m_propagating; }
+    double propProgress() const { return m_propProgress; }
+    QString propLabel() const { return m_propLabel; }
+    bool atPropagated() const;
+
+    // Read-only access to the keyframes for the propagation worker.
+    const QVector<Keyframe> &keyframeData() const { return m_keyframes; }
+
+    // Progress hooks driven by AppController while the worker runs.
+    void setPropagating(bool on, const QString &label = QString());
+    void setPropProgress(double frac, const QString &label);
+    // Load / attach a dense track (4 image points per frame from start).
+    void applyDenseTrack(int start, const QVector<std::array<QPointF, 4>> &dense);
+    Q_INVOKABLE bool loadDenseTrack(const QString &path);
+    Q_INVOKABLE void clearPropagation();
 
     // Called when a video is loaded so default points land inside the frame.
     void setImageSize(int width, int height);
@@ -98,6 +124,7 @@ signals:
     void stateChanged();
     void overlayChanged();
     void keyframesChanged();
+    void propagationChanged();
     void edited();
 
 private:
@@ -105,6 +132,8 @@ private:
     // 4-point DLT; optionally reports the mean reprojection error (px).
     cv::Mat solveH(const QPointF img[4], double *reprojErrPx = nullptr) const;
     void interpolatedImagePoints(int frame, QPointF out[4]) const;
+    // Image points for a frame: dense track if propagated, else interpolation.
+    void imagePointsAt(int frame, QPointF out[4]) const;
     void refreshForCurrentFrame();
     void upsertKeyframe(int frame, const QPointF img[4], bool verified, double err);
 
@@ -118,6 +147,13 @@ private:
     int     m_imageWidth{1920};
     int     m_imageHeight{1080};
     bool    m_touched{false}; // user moved a point since defaults were applied
+
+    // Dense per-frame track (phase F2). Empty when not propagated.
+    int     m_denseStart{0};
+    QVector<std::array<QPointF, 4>> m_dense;
+    bool    m_propagating{false};
+    double  m_propProgress{0.0};
+    QString m_propLabel;
 };
 
 #endif

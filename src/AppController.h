@@ -16,6 +16,7 @@ class HomographyManager;
 class TrackingManager;
 class TracksModel;
 class MatchManager;
+class HomographyWorker;
 
 // Facade the QML layer talks to. Owns the video worker, the models and
 // the managers; forwards frames into the image provider.
@@ -146,6 +147,11 @@ public:
 
     Q_INVOKABLE bool saveProject();
 
+    // Phase F2: run the inter-frame optical-flow propagation over the manual
+    // keyframes and load the resulting dense per-frame homography track.
+    Q_INVOKABLE void propagateHomography();
+    Q_INVOKABLE void cancelPropagation();
+
 signals:
     void videoStateChanged();
     void playingChanged();
@@ -171,6 +177,9 @@ private:
     void pushCommand(const QVariantMap &cmd);
     void applyCommand(const QVariantMap &cmd, bool isUndo);
 
+    void onPropagationFinished(bool ok, const QString &error, int startFrame, int count);
+    QString denseTrackPath() const;
+
     VideoEngine       *m_engine{nullptr};
     FrameProvider     *m_frameProvider{nullptr};   // owned by the QML engine
     VideoEngine       *m_engine2{nullptr};
@@ -183,6 +192,7 @@ private:
     TrackingManager   *m_tracking{nullptr};
     TracksModel       *m_tracksModel{nullptr};
     MatchManager      *m_match{nullptr};
+    HomographyWorker  *m_homoWorker{nullptr};
 
     bool    m_videoLoaded{false};
     QString m_videoPath;

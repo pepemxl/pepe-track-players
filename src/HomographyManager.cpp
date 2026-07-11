@@ -2,6 +2,8 @@
 
 #include <QJsonArray>
 #include <QVariantMap>
+#include <QFile>
+#include <QDataStream>
 #include <algorithm>
 #include <cmath>
 
@@ -309,12 +311,24 @@ void HomographyManager::interpolatedImagePoints(int frame, QPointF out[4]) const
     for (int i = 0; i < 4; ++i) out[i] = last.image[i];
 }
 
+void HomographyManager::imagePointsAt(int frame, QPointF out[4]) const
+{
+    if (!m_dense.isEmpty() && frame >= m_denseStart
+        && frame < m_denseStart + m_dense.size()) {
+        const std::array<QPointF, 4> &a = m_dense[frame - m_denseStart];
+        for (int k = 0; k < 4; ++k)
+            out[k] = a[k];
+        return;
+    }
+    interpolatedImagePoints(frame, out);
+}
+
 void HomographyManager::refreshForCurrentFrame()
 {
     if (m_keyframes.isEmpty())
         return;
     QPointF img[4];
-    interpolatedImagePoints(m_currentFrame, img);
+    imagePointsAt(m_currentFrame, img);
     for (int i = 0; i < 4; ++i)
         m_points[i].image = img[i];
     double err = 0.0;
@@ -367,6 +381,12 @@ void HomographyManager::recompute()
     m_verified = true;
     upsertKeyframe(m_currentFrame, img, true, err);
     m_touched = true;
+    // The dense propagation is now stale relative to the edited keyframes.
+    if (!m_dense.isEmpty()) {
+        m_dense.clear();
+        m_denseStart = 0;
+        emit propagationChanged();
+    }
     emit stateChanged();
     emit keyframesChanged();
     emit edited();
@@ -377,6 +397,11 @@ void HomographyManager::removeKeyframe(int frame)
     for (int i = 0; i < m_keyframes.size(); ++i) {
         if (m_keyframes[i].frame == frame) {
             m_keyframes.removeAt(i);
+            if (!m_dense.isEmpty()) {
+                m_dense.clear();
+                m_denseStart = 0;
+                emit propagationChanged();
+            }
             emit keyframesChanged();
             if (m_keyframes.isEmpty()) {
                 m_verified = false;
@@ -395,8 +420,88 @@ void HomographyManager::removeKeyframe(int frame)
 cv::Mat HomographyManager::homographyAt(int frame) const
 {
     QPointF img[4];
-    interpolatedImagePoints(frame, img);
+    imagePointsAt(frame, img);
     return solveH(img);
+}
+
+bool HomographyManager::atPropagated() const
+{
+    return !m_dense.isEmpty() && m_currentFrame >= m_denseStart
+        && m_currentFrame < m_denseStart + m_dense.size();
+}
+
+void HomographyManager::setPropagating(bool on, const QString &label)
+{
+    m_propagating = on;
+    if (!label.isNull())
+        m_propLabel = label;
+    if (on)
+        m_propProgress = 0.0;
+    emit propagationChanged();
+}
+
+void HomographyManager::setPropProgress(double frac, const QString &label)
+{
+    m_propProgress = frac;
+    if (!label.isNull())
+        m_propLabel = label;
+    emit propagationChanged();
+}
+
+void HomographyManager::applyDenseTrack(int start,
+                                        const QVector<std::array<QPointF, 4>> &dense)
+{
+    m_denseStart = start;
+    m_dense = dense;
+    emit propagationChanged();
+    if (!m_keyframes.isEmpty())
+        refreshForCurrentFrame();
+    else
+        emit stateChanged();
+}
+
+bool HomographyManager::loadDenseTrack(const QString &path)
+{
+    QFile f(path);
+    if (!f.open(QIODevice::ReadOnly))
+        return false;
+    QDataStream ds(&f);
+    ds.setByteOrder(QDataStream::LittleEndian);
+    ds.setFloatingPointPrecision(QDataStream::DoublePrecision);
+    qint32 start = 0, count = 0;
+    ds >> start >> count;
+    if (count <= 0 || count > 10000000)
+        return false;
+    QVector<std::array<QPointF, 4>> dense;
+    dense.reserve(count);
+    for (int i = 0; i < count; ++i) {
+        std::array<QPointF, 4> a;
+        for (int k = 0; k < 4; ++k) {
+            double x = 0.0, y = 0.0;
+            ds >> x >> y;
+            a[k] = QPointF(x, y);
+        }
+        if (ds.status() != QDataStream::Ok)
+            return false;
+        dense.append(a);
+    }
+    applyDenseTrack(start, dense);
+    return true;
+}
+
+void HomographyManager::clearPropagation()
+{
+    if (m_dense.isEmpty() && !m_propagating && m_propProgress == 0.0)
+        return;
+    m_dense.clear();
+    m_denseStart = 0;
+    m_propagating = false;
+    m_propProgress = 0.0;
+    emit propagationChanged();
+    if (!m_keyframes.isEmpty())
+        refreshForCurrentFrame();
+    else
+        emit stateChanged();
 }
 
 QPointF HomographyManager::imageToPitch(double x, double y) const

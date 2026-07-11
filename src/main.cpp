@@ -1,5 +1,7 @@
 #include "AppController.h"
 #include "FrameProvider.h"
+#include "HomographyManager.h"
+#include "HomographyWorker.h"
 #include "MatchManager.h"
 #include "TrackingManager.h"
 
@@ -8,6 +10,12 @@
 #include <QQmlContext>
 #include <QQuickStyle>
 #include <QVariantMap>
+#include <QDir>
+#include <QFile>
+#include <QFileInfo>
+#include <QJsonDocument>
+#include <QJsonObject>
+#include <QPointF>
 #include <cstdio>
 
 #include <opencv2/videoio.hpp>
@@ -231,6 +239,86 @@ static int runAddVideo(const QString &videoPath, int matchId,
     return 0;
 }
 
+// Headless: run the phase-F2 inter-frame homography propagation on an
+// already-calibrated video (>=2 keyframes in <video>_project/project.json)
+// and report the dense track ("pepe --propagate-homography <video>").
+static int runPropagateHomography(const QString &videoPath)
+{
+    const QFileInfo info(videoPath);
+    const QString dir = info.dir().filePath(info.completeBaseName() + QStringLiteral("_project"));
+    QFile pf(QDir(dir).filePath(QStringLiteral("project.json")));
+    if (!pf.open(QIODevice::ReadOnly)) {
+        std::fprintf(stderr, "error: no project.json at %s\n", qPrintable(dir));
+        return 1;
+    }
+    const QJsonObject root = QJsonDocument::fromJson(pf.readAll()).object();
+    pf.close();
+
+    HomographyManager hm;
+    hm.fromJson(root[QStringLiteral("homography")].toObject());
+    const auto &kfs = hm.keyframeData();
+    if (kfs.size() < 2) {
+        std::fprintf(stderr, "error: need >=2 keyframes (have %d)\n",
+                     static_cast<int>(kfs.size()));
+        return 1;
+    }
+    std::fprintf(stdout, "%d keyframes, span frame %d .. %d\n",
+                 static_cast<int>(kfs.size()), kfs.first().frame, kfs.last().frame);
+
+    QVector<HomographyWorker::Keyframe> wkfs;
+    for (const auto &k : kfs) {
+        HomographyWorker::Keyframe wk;
+        wk.frame = k.frame;
+        for (int j = 0; j < 4; ++j) wk.img[j] = k.image[j];
+        wkfs.append(wk);
+    }
+    const QString outPath = QDir(dir).filePath(QStringLiteral("homography_dense.bin"));
+
+    HomographyWorker worker;
+    QObject::connect(&worker, &HomographyWorker::progressChanged,
+                     [](double frac, const QString &label) {
+        static int last = -1;
+        const int pct = static_cast<int>(frac * 100);
+        if (pct / 10 != last) { last = pct / 10;
+            std::fprintf(stdout, "%3d%%  %s\n", pct, qPrintable(label)); std::fflush(stdout); }
+    });
+    QObject::connect(&worker, &HomographyWorker::finished, &hm,
+                     [&](bool ok, const QString &err, int start, int count) {
+        if (!ok) {
+            std::fprintf(stderr, "error: %s\n", qPrintable(err));
+            QCoreApplication::exit(1);
+            return;
+        }
+        std::fprintf(stdout, "dense track: %d frames from %d -> %s\n",
+                     count, start, qPrintable(outPath));
+        hm.loadDenseTrack(outPath);
+
+        // Sanity: dense endpoints must match the keyframes; sample the span
+        // to show propagated vs linear-interpolated divergence.
+        auto lerp = [&](int f, QPointF out[4]) {
+            const auto &a = wkfs.first(); const auto &b = wkfs.last();
+            const double t = double(f - a.frame) / double(b.frame - a.frame);
+            for (int j = 0; j < 4; ++j) out[j] = a.img[j] * (1.0 - t) + b.img[j] * t;
+        };
+        const int f0 = wkfs.first().frame, f1 = wkfs.last().frame;
+        for (int s = 0; s <= 4; ++s) {
+            const int f = f0 + (f1 - f0) * s / 4;
+            QPointF li[4]; lerp(f, li);
+            // Propagated point A via imageToPitchAt round-trip is indirect;
+            // instead read back the dense point A by mapping pitch(0,0).
+            const QPointF pit = hm.imageToPitchAt(f, li[0].x(), li[0].y());
+            std::fprintf(stdout, "  frame %5d  linearA=(%.1f,%.1f)  pitchOfLinearA=(%.2f,%.2f)m\n",
+                         f, li[0].x(), li[0].y(), pit.x(), pit.y());
+        }
+        std::fflush(stdout);
+        QCoreApplication::exit(0);
+    });
+
+    worker.configure(videoPath, wkfs, outPath);
+    worker.start();
+    return QCoreApplication::exec();
+}
+
 int main(int argc, char *argv[])
 {
     QGuiApplication app(argc, argv);
@@ -257,6 +345,8 @@ int main(int argc, char *argv[])
             return runMatchOp(args.at(2), QStringLiteral("chunk"));
         if (args.size() >= 3 && args.at(1) == QLatin1String("--preprocess"))
             return runMatchOp(args.at(2), QStringLiteral("preprocess"));
+        if (args.size() >= 3 && args.at(1) == QLatin1String("--propagate-homography"))
+            return runPropagateHomography(args.at(2));
     }
 
     // Basic style so QML can fully restyle the controls.
