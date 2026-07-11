@@ -229,6 +229,19 @@ offline. Expuesto como `App.match`.
 - `matchStartFrame` / `matchEndFrame` / `hasLineupMarkers` /
   `lineupsExtracted` — propiedades derivadas de los marcadores para la UI
   (Range chip del tab Tracking, botón de OCR).
+- `createProject()` (invocable) — crea un proyecto vacío (entrada en
+  games.json con `videos: []` y su carpeta) y lo hace el proyecto actual
+  con `videoId = 0`; las operaciones, marcadores y crop quedan bloqueados
+  hasta que se agrega el primer video vía `prepareAddVideo()` (menú
+  "ADD VIDEO AS…").
+- `listProjects()` / `prepareAddVideo(role, segment)` /
+  `prepareOpenVideo(matchId, videoId)` — soporte del menú Project: lista
+  de proyectos con sus videos; alta del próximo video abierto en el
+  proyecto actual con rol y segmento (**siempre crea entrada nueva**, así
+  el mismo archivo puede repetirse como otra vista); y apertura de una
+  entrada exacta por (match, video id) — necesario porque con rutas
+  duplicadas el lookup por ruta es ambiguo (resuelve a la primera; lo
+  usan los modos standalone y CLI).
 - Al terminar cada op actualiza `status` en games.json:
   `registered → preprocessed → chunked → tracked`.
 - Propiedades: `registered`, `matchId`, `status`, `matchDir`, `chunkCount`,
