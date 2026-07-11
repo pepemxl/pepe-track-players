@@ -51,7 +51,8 @@ VideoOpsWorker::~VideoOpsWorker()
 void VideoOpsWorker::configure(Op op, const QString &sourcePath,
                                const QString &preprocessedPath, const QString &chunksDir,
                                const QRect &crop,
-                               const std::vector<std::pair<double, double>> &excludedSec)
+                               const std::vector<std::pair<double, double>> &excludedSec,
+                               int onlyChunk)
 {
     m_op = op;
     m_sourcePath = sourcePath;
@@ -59,6 +60,7 @@ void VideoOpsWorker::configure(Op op, const QString &sourcePath,
     m_chunksDir = chunksDir;
     m_crop = crop;
     m_excluded = excludedSec;
+    m_onlyChunk = onlyChunk;
     m_stop.store(false);
 }
 
@@ -279,6 +281,12 @@ void VideoOpsWorker::runTrack()
     long long rowsWritten = 0;
 
     for (int c = 0; c < chunks.size(); ++c) {
+        // Chunk number from the file name keeps CSV names aligned even if
+        // some chunk were missing.
+        const int number = chunks.at(c).mid(11, 3).toInt();
+        if (m_onlyChunk > 0 && number != m_onlyChunk)
+            continue;   // single-chunk track op: skip the rest
+
         const QString chunkPath = chunksDir + QLatin1Char('/') + chunks.at(c);
         cv::VideoCapture cap;
         if (!cap.open(chunkPath.toStdString())) {
@@ -286,9 +294,6 @@ void VideoOpsWorker::runTrack()
             return;
         }
         const int chunkFrames = std::max(1, static_cast<int>(cap.get(cv::CAP_PROP_FRAME_COUNT)));
-        // Chunk number from the file name keeps CSV names aligned even if
-        // some chunk were missing.
-        const int number = chunks.at(c).mid(11, 3).toInt();
         const double chunkStartSec = (number - 1) * static_cast<double>(kChunkSeconds);
         const double chunkEndSec = chunkStartSec + chunkFrames / kChunkFps;
         const QString chunkRange = QString::number(chunkStartSec, 'f', 2) + QLatin1Char(',')

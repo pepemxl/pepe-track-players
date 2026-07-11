@@ -48,11 +48,40 @@ class AppController : public QObject
     Q_PROPERTY(QObject *tracksModel READ tracksModelObj CONSTANT)
     Q_PROPERTY(QObject *match READ matchObj CONSTANT)
 
+    // Secondary player (camera-sync section): a second project video
+    // playing side by side with the main one.
+    Q_PROPERTY(bool secLoaded READ secLoaded NOTIFY secStateChanged)
+    Q_PROPERTY(QString secVideoName READ secVideoName NOTIFY secStateChanged)
+    Q_PROPERTY(int secVideoId READ secVideoId NOTIFY secStateChanged)
+    Q_PROPERTY(bool secPlaying READ secPlaying NOTIFY secPlayingChanged)
+    Q_PROPERTY(int secCurrentFrame READ secCurrentFrame NOTIFY secPositionChanged)
+    Q_PROPERTY(double secPositionSec READ secPositionSec NOTIFY secPositionChanged)
+    Q_PROPERTY(int secTotalFrames READ secTotalFrames NOTIFY secStateChanged)
+    Q_PROPERTY(double secFps READ secFps NOTIFY secStateChanged)
+    Q_PROPERTY(int secFrameSerial READ secFrameSerial NOTIFY secFrameSerialChanged)
+
 public:
     explicit AppController(QObject *parent = nullptr);
     ~AppController() override;
 
     FrameProvider *frameProvider() const { return m_frameProvider; }
+    FrameProvider *frameProvider2() const { return m_frameProvider2; }
+
+    bool secLoaded() const { return m_secLoaded; }
+    QString secVideoName() const { return m_secVideoName; }
+    int secVideoId() const { return m_secVideoId; }
+    bool secPlaying() const { return m_secPlaying; }
+    int secCurrentFrame() const { return m_secCurrentFrame; }
+    double secPositionSec() const { return m_secPositionSec; }
+    int secTotalFrames() const { return m_secTotalFrames; }
+    double secFps() const { return m_secFps; }
+    int secFrameSerial() const { return m_secFrameSerial; }
+
+    Q_INVOKABLE void openSecondary(int videoId, const QString &path);
+    Q_INVOKABLE void closeSecondary();
+    Q_INVOKABLE void toggleSecPlay();
+    Q_INVOKABLE void seekSecFrac(double frac);
+    Q_INVOKABLE void seekSecFrame(int frame);
 
     bool videoLoaded() const { return m_videoLoaded; }
     QString videoName() const { return m_videoName; }
@@ -125,6 +154,10 @@ signals:
     void playbackFpsChanged();
     void dirtyChanged();
     void undoChanged();
+    void secStateChanged();
+    void secPlayingChanged();
+    void secPositionChanged();
+    void secFrameSerialChanged();
     void errorChanged();
 
 private:
@@ -140,6 +173,8 @@ private:
 
     VideoEngine       *m_engine{nullptr};
     FrameProvider     *m_frameProvider{nullptr};   // owned by the QML engine
+    VideoEngine       *m_engine2{nullptr};
+    FrameProvider     *m_frameProvider2{nullptr};  // owned by the QML engine
     RosterModel       *m_homeRoster{nullptr};
     RosterModel       *m_awayRoster{nullptr};
     MatchMetadata     *m_metadata{nullptr};
@@ -167,6 +202,16 @@ private:
 
     QVector<QVariantMap> m_undoStack;
     QVector<QVariantMap> m_redoStack;
+
+    bool    m_secLoaded{false};
+    QString m_secVideoName;
+    int     m_secVideoId{0};
+    bool    m_secPlaying{false};
+    int     m_secCurrentFrame{0};
+    double  m_secPositionSec{0.0};
+    int     m_secTotalFrames{0};
+    double  m_secFps{25.0};
+    int     m_secFrameSerial{0};
 };
 
 #endif

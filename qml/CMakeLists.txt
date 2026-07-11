@@ -20,6 +20,8 @@ qt_add_qml_module(pepetrack_qml
         PlayerDropdown.qml
         VideoOpsPanel.qml
         VideoView.qml
+        SyncView.qml
+        ChunksView.qml
         HomographyView.qml
         MetadataView.qml
         RosterTable.qml

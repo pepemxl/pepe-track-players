@@ -267,6 +267,7 @@ int main(int argc, char *argv[])
     QQmlApplicationEngine engine;
     // The engine takes ownership of the provider.
     engine.addImageProvider(QStringLiteral("videoframe"), controller.frameProvider());
+    engine.addImageProvider(QStringLiteral("videoframe2"), controller.frameProvider2());
     engine.rootContext()->setContextProperty(QStringLiteral("App"), &controller);
 
     QObject::connect(&engine, &QQmlApplicationEngine::objectCreationFailed,

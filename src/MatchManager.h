@@ -117,8 +117,22 @@ public:
     Q_INVOKABLE void preprocess();
     Q_INVOKABLE void createChunks();
     Q_INVOKABLE void trackChunks();
+    // Runs the tracking op for a single chunk (video_part_<number>).
+    Q_INVOKABLE void trackChunk(int number);
     Q_INVOKABLE void extractLineups();
     Q_INVOKABLE void cancelOp();
+
+    // Chunks of the current video: [{number, file, frames, start_sec,
+    // end_sec, hasCsv}], from chunks.json (or the chunk files).
+    Q_INVOKABLE QVariantList chunksList() const;
+
+    // Camera-sync points: real match minute -> frame, per video and
+    // period ("1T"/"2T", minutes 0..45 every 5). One frame per
+    // (period, minute); persisted in sync_points_<NN>.json.
+    Q_INVOKABLE QVariantList syncPoints(int videoId) const;
+    Q_INVOKABLE void setSyncPoint(int videoId, const QString &period,
+                                  int minute, int frame);
+    Q_INVOKABLE void removeSyncPoint(int videoId, const QString &period, int minute);
 
     // Video-time ranges excluded from tracking: before match_start, after
     // match_end, and every commercial range.
@@ -133,6 +147,7 @@ signals:
     void matchChanged();
     void markersChanged();
     void opStateChanged();
+    void syncPointsChanged();
     // OCR result: { teamA: [{number,name}...], teamB: [...],
     //               teamNameA: str, teamNameB: str }
     void lineupsReady(const QVariantMap &result);
@@ -148,8 +163,9 @@ private:
     void migrateLegacyArtifacts();
     void loadMarkers();
     void saveMarkers();
+    QString syncPointsPathFor(int videoId) const;
     std::vector<std::pair<double, double>> commercialRangesSec() const;
-    void startOp(int op);
+    void startOp(int op, int onlyChunk = 0);
     void onOpProgress(double fraction, const QString &label);
     void onOpFinished(int op, bool ok, const QString &error, const QVariantMap &result);
     void onLineupsFinished(bool ok, const QString &error, const QVariantMap &result);

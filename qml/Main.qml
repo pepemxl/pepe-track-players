@@ -12,7 +12,8 @@ ApplicationWindow {
     title: "PepeTrack — Football Tracker"
     color: Theme.bg
 
-    property int activeTab: 0   // 0 video, 1 homography, 2 metadata, 3 tracking
+    // 0 video, 1 homography, 2 metadata, 3 tracking, 4 sync, 5 chunks
+    property int activeTab: 0
 
     FileDialog {
         id: openDialog
@@ -38,16 +39,16 @@ ApplicationWindow {
         enabled: root.activeTab === 0
         onActivated: App.seekRelative(5)
     }
-    // Tagging undo/redo — Video tab only, so Metadata text fields keep
-    // their native editing undo.
+    // Tagging undo/redo — Video and Chunks tabs (both tag players), so the
+    // Metadata text fields keep their native editing undo.
     Shortcut {
         sequence: StandardKey.Undo
-        enabled: root.activeTab === 0
+        enabled: root.activeTab === 0 || root.activeTab === 5
         onActivated: App.undo()
     }
     Shortcut {
         sequences: ["Ctrl+Y", "Ctrl+Shift+Z"]
-        enabled: root.activeTab === 0
+        enabled: root.activeTab === 0 || root.activeTab === 5
         onActivated: App.redo()
     }
 
@@ -85,5 +86,11 @@ ApplicationWindow {
         HomographyView { anchors.fill: parent; visible: root.activeTab === 1 }
         MetadataView   { anchors.fill: parent; visible: root.activeTab === 2 }
         TrackingView   { anchors.fill: parent; visible: root.activeTab === 3 }
+        SyncView       { anchors.fill: parent; visible: root.activeTab === 4 }
+        ChunksView {
+            anchors.fill: parent
+            visible: root.activeTab === 5
+            onOpenVideoTab: root.activeTab = 0
+        }
     }
 }

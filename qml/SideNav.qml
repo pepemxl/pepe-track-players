@@ -1,6 +1,7 @@
 import QtQuick
 
-// Left sidebar with the 4 section switches (Video / Homog. / Metadata / Tracking).
+// Left sidebar with the section switches
+// (Video / Sync / Chunks / Homog. / Metadata / Tracking).
 Rectangle {
     id: nav
     width: 88
@@ -38,6 +39,55 @@ Rectangle {
                     ctx.beginPath()
                     ctx.moveTo(15, 5); ctx.lineTo(21, 10); ctx.lineTo(15, 15)
                     ctx.closePath(); ctx.fill()
+                }
+            }
+        }
+
+        NavItem {
+            id: syncNav
+            label: "Sync"
+            active: nav.activeTab === 4
+            onClicked: nav.tabSelected(4)
+            iconItem: Canvas {
+                anchors.fill: parent
+                property color c: syncNav.iconColor
+                onCChanged: requestPaint()
+                onPaint: {
+                    const ctx = getContext("2d")
+                    ctx.reset()
+                    ctx.strokeStyle = c
+                    ctx.lineWidth = 1.6
+                    // two overlapping film frames
+                    ctx.beginPath()
+                    ctx.roundedRect(1, 3, 12, 11, 2, 2)
+                    ctx.stroke()
+                    ctx.beginPath()
+                    ctx.roundedRect(8, 7, 12, 11, 2, 2)
+                    ctx.stroke()
+                }
+            }
+        }
+
+        NavItem {
+            id: chunksNav
+            label: "Chunks"
+            active: nav.activeTab === 5
+            onClicked: nav.tabSelected(5)
+            iconItem: Canvas {
+                anchors.fill: parent
+                property color c: chunksNav.iconColor
+                onCChanged: requestPaint()
+                onPaint: {
+                    const ctx = getContext("2d")
+                    ctx.reset()
+                    ctx.strokeStyle = c
+                    ctx.lineWidth = 1.6
+                    // three stacked segments
+                    for (const y of [3, 8.5, 14]) {
+                        ctx.beginPath()
+                        ctx.roundedRect(2, y, 16, 3.5, 1.5, 1.5)
+                        ctx.stroke()
+                    }
                 }
             }
         }

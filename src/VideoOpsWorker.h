@@ -32,10 +32,13 @@ public:
     // crop: optional view rect (original pixels) applied by Preprocess —
     // and by Chunk when it falls back to the original source. excludedSec:
     // [start,end] ranges in seconds of video time that the Track op skips.
+    // onlyChunk > 0 restricts the Track op to that single chunk number
+    // (video_part_<onlyChunk>); 0 tracks every chunk.
     void configure(Op op, const QString &sourcePath,
                    const QString &preprocessedPath, const QString &chunksDir,
                    const QRect &crop,
-                   const std::vector<std::pair<double, double>> &excludedSec);
+                   const std::vector<std::pair<double, double>> &excludedSec,
+                   int onlyChunk = 0);
     void requestStop() { m_stop.store(true); }
     void stopAndWait();
 
@@ -58,6 +61,7 @@ private:
     QString m_chunksDir;
     QRect   m_crop;
     std::vector<std::pair<double, double>> m_excluded;
+    int     m_onlyChunk{0};
     std::atomic<bool> m_stop{false};
 };
 

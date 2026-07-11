@@ -773,14 +773,14 @@ std::vector<std::pair<double, double>> MatchManager::commercialRangesSec() const
     return ranges;
 }
 
-void MatchManager::startOp(int op)
+void MatchManager::startOp(int op, int onlyChunk)
 {
     if (!registered() || m_videoId <= 0 || m_opRunning
             || m_worker->isRunning() || m_lineup->isRunning())
         return;
     m_worker->configure(static_cast<VideoOpsWorker::Op>(op),
                         m_videoPath, preprocessedFile(), chunksDir(), m_crop,
-                        excludedRangesSec());
+                        excludedRangesSec(), onlyChunk);
     m_opRunning = true;
     m_opProgress = 0.0;
     m_opLabel = QStringLiteral("Starting…");
@@ -792,6 +792,140 @@ void MatchManager::startOp(int op)
 void MatchManager::preprocess()   { startOp(VideoOpsWorker::Preprocess); }
 void MatchManager::createChunks() { startOp(VideoOpsWorker::Chunk); }
 void MatchManager::trackChunks()  { startOp(VideoOpsWorker::Track); }
+
+void MatchManager::trackChunk(int number)
+{
+    if (number > 0)
+        startOp(VideoOpsWorker::Track, number);
+}
+
+QVariantList MatchManager::chunksList() const
+{
+    QVariantList list;
+    if (m_matchDir.isEmpty() || m_videoId <= 0)
+        return list;
+    const QString dir = chunksDir();
+
+    // Prefer the chunks.json index; fall back to scanning the files.
+    QFile idx(dir + QStringLiteral("/chunks.json"));
+    if (idx.open(QIODevice::ReadOnly)) {
+        const QJsonArray chunks = QJsonDocument::fromJson(idx.readAll())
+                                      .object()[QStringLiteral("chunks")].toArray();
+        for (const QJsonValue &v : chunks) {
+            const QJsonObject o = v.toObject();
+            QVariantMap m = o.toVariantMap();
+            const int number = o[QStringLiteral("number")].toInt();
+            m[QStringLiteral("hasCsv")] = QFile::exists(
+                dir + QStringLiteral("/video_part_%1.csv")
+                          .arg(number, 3, 10, QLatin1Char('0')));
+            list.append(m);
+        }
+        return list;
+    }
+
+    const QStringList files = QDir(dir).entryList(
+        {QStringLiteral("video_part_*.mp4")}, QDir::Files, QDir::Name);
+    for (const QString &f : files) {
+        const int number = f.mid(11, 3).toInt();
+        QVariantMap m;
+        m[QStringLiteral("number")] = number;
+        m[QStringLiteral("file")] = f;
+        m[QStringLiteral("start_sec")] = (number - 1) * 60.0;
+        m[QStringLiteral("end_sec")] = number * 60.0;
+        m[QStringLiteral("frames")] = 600;
+        m[QStringLiteral("hasCsv")] = QFile::exists(
+            dir + QStringLiteral("/video_part_%1.csv")
+                      .arg(number, 3, 10, QLatin1Char('0')));
+        list.append(m);
+    }
+    return list;
+}
+
+QString MatchManager::syncPointsPathFor(int videoId) const
+{
+    return m_matchDir + QStringLiteral("/sync_points_%1.json")
+                            .arg(videoId, 2, 10, QLatin1Char('0'));
+}
+
+QVariantList MatchManager::syncPoints(int videoId) const
+{
+    QVariantList list;
+    if (m_matchDir.isEmpty() || videoId <= 0)
+        return list;
+    QFile file(syncPointsPathFor(videoId));
+    if (!file.open(QIODevice::ReadOnly))
+        return list;
+    const QJsonArray points = QJsonDocument::fromJson(file.readAll())
+                                  .object()[QStringLiteral("points")].toArray();
+    for (const QJsonValue &v : points)
+        list.append(v.toObject().toVariantMap());
+    return list;
+}
+
+void MatchManager::setSyncPoint(int videoId, const QString &period,
+                                int minute, int frame)
+{
+    if (m_matchDir.isEmpty() || videoId <= 0)
+        return;
+    QVariantList points = syncPoints(videoId);
+    // Upsert this (period, minute), and keep frames unique: a given video
+    // frame marks exactly one minute, so drop any other slot that already
+    // pointed at this frame (otherwise two minutes could share a frame).
+    for (int i = points.size() - 1; i >= 0; --i) {
+        const QVariantMap p = points.at(i).toMap();
+        const bool sameSlot = p.value(QStringLiteral("period")).toString() == period
+                              && p.value(QStringLiteral("minute")).toInt() == minute;
+        const bool sameFrame = p.value(QStringLiteral("frame")).toInt() == frame;
+        if (sameSlot || sameFrame)
+            points.removeAt(i);
+    }
+    QVariantMap p;
+    p[QStringLiteral("period")] = period;
+    p[QStringLiteral("minute")] = minute;
+    p[QStringLiteral("frame")] = frame;
+    points.append(p);
+
+    QJsonArray array;
+    for (const QVariant &v : points)
+        array.append(QJsonObject::fromVariantMap(v.toMap()));
+    QJsonObject root;
+    root[QStringLiteral("video")] = videoId;
+    root[QStringLiteral("points")] = array;
+    QFile file(syncPointsPathFor(videoId));
+    if (file.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+        file.write(QJsonDocument(root).toJson(QJsonDocument::Indented));
+        file.close();   // flush before notifying: listeners re-read this file
+    }
+    emit syncPointsChanged();
+}
+
+void MatchManager::removeSyncPoint(int videoId, const QString &period, int minute)
+{
+    QVariantList points = syncPoints(videoId);
+    bool changed = false;
+    for (int i = points.size() - 1; i >= 0; --i) {
+        const QVariantMap p = points.at(i).toMap();
+        if (p.value(QStringLiteral("period")).toString() == period
+                && p.value(QStringLiteral("minute")).toInt() == minute) {
+            points.removeAt(i);
+            changed = true;
+        }
+    }
+    if (!changed)
+        return;
+    QJsonArray array;
+    for (const QVariant &v : points)
+        array.append(QJsonObject::fromVariantMap(v.toMap()));
+    QJsonObject root;
+    root[QStringLiteral("video")] = videoId;
+    root[QStringLiteral("points")] = array;
+    QFile file(syncPointsPathFor(videoId));
+    if (file.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+        file.write(QJsonDocument(root).toJson(QJsonDocument::Indented));
+        file.close();   // flush before notifying: listeners re-read this file
+    }
+    emit syncPointsChanged();
+}
 
 void MatchManager::extractLineups()
 {

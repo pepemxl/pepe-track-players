@@ -63,6 +63,8 @@ AppController::AppController(QObject *parent)
 {
     m_engine        = new VideoEngine(this);
     m_frameProvider = new FrameProvider();
+    m_engine2        = new VideoEngine(this);
+    m_frameProvider2 = new FrameProvider();
     m_homeRoster    = new RosterModel(this);
     m_awayRoster    = new RosterModel(this);
     m_metadata      = new MatchMetadata(this);
@@ -104,6 +106,30 @@ AppController::AppController(QObject *parent)
         m_lastError = msg;
         emit errorChanged();
     }, Qt::QueuedConnection);
+    // Secondary (camera-sync) player.
+    connect(m_engine2, &VideoEngine::frameReady, this,
+            [this](const QImage &frame, int frameIndex, double posSec) {
+        m_frameProvider2->setImage(frame);
+        ++m_secFrameSerial;
+        m_secCurrentFrame = frameIndex;
+        m_secPositionSec = posSec;
+        emit secFrameSerialChanged();
+        emit secPositionChanged();
+    }, Qt::QueuedConnection);
+    connect(m_engine2, &VideoEngine::videoInfo, this,
+            [this](int, int, int totalFrames, double fps) {
+        m_secTotalFrames = totalFrames;
+        m_secFps = fps;
+        m_secLoaded = true;
+        emit secStateChanged();
+    }, Qt::QueuedConnection);
+    connect(m_engine2, &VideoEngine::endReached, this, [this]() {
+        if (m_secPlaying) {
+            m_secPlaying = false;
+            emit secPlayingChanged();
+        }
+    }, Qt::QueuedConnection);
+
     connect(m_tracking, &TrackingManager::tracksUpdated,
             m_tracksModel, &TracksModel::setRows);
 
@@ -146,6 +172,7 @@ AppController::~AppController()
 {
     m_tracking->stopInference();
     m_engine->stopProcessing();
+    m_engine2->stopProcessing();
 }
 
 QObject *AppController::metadataObj() const   { return m_metadata; }
@@ -165,6 +192,7 @@ void AppController::openVideo(const QUrl &url)
 
     m_engine->stopProcessing();
     m_tracking->stopInference();
+    closeSecondary();   // it belongs to the previous project context
 
     m_videoPath = path;
     m_videoName = QFileInfo(path).fileName();
@@ -194,6 +222,64 @@ void AppController::openProjectVideo(int matchId, int videoId, const QString &pa
 {
     m_match->prepareOpenVideo(matchId, videoId);
     openVideo(QUrl::fromLocalFile(path));
+}
+
+void AppController::openSecondary(int videoId, const QString &path)
+{
+    m_engine2->stopProcessing();
+    m_secVideoId = videoId;
+    m_secVideoName = QFileInfo(path).fileName();
+    m_secLoaded = false;
+    m_secPlaying = false;
+    m_secCurrentFrame = 0;
+    m_secPositionSec = 0.0;
+    m_engine2->setSource(path);
+    m_engine2->setPaused(true);   // show the first frame, then hold
+    m_engine2->start();
+    emit secStateChanged();
+    emit secPlayingChanged();
+    emit secPositionChanged();
+}
+
+void AppController::closeSecondary()
+{
+    m_engine2->stopProcessing();
+    m_secLoaded = false;
+    m_secPlaying = false;
+    m_secVideoId = 0;
+    m_secVideoName.clear();
+    emit secStateChanged();
+    emit secPlayingChanged();
+}
+
+void AppController::toggleSecPlay()
+{
+    if (!m_secLoaded)
+        return;
+    if (m_secPlaying) {
+        m_engine2->setPaused(true);
+        m_secPlaying = false;
+    } else {
+        if (m_secTotalFrames > 0 && m_secCurrentFrame >= m_secTotalFrames - 1)
+            m_engine2->seekToFrame(0);
+        m_engine2->setPaused(false);
+        m_secPlaying = true;
+    }
+    emit secPlayingChanged();
+}
+
+void AppController::seekSecFrac(double frac)
+{
+    if (!m_secLoaded || m_secTotalFrames <= 0)
+        return;
+    frac = std::clamp(frac, 0.0, 1.0);
+    m_engine2->seekToFrame(static_cast<int>(frac * (m_secTotalFrames - 1)));
+}
+
+void AppController::seekSecFrame(int frame)
+{
+    if (m_secLoaded)
+        m_engine2->seekToFrame(frame);
 }
 
 void AppController::addVideoToProject(const QUrl &url, const QString &role,
