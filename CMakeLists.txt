@@ -35,6 +35,8 @@ set(SOURCES
     src/TagsModel.h
     src/HomographyManager.cpp
     src/HomographyManager.h
+    src/HomographyWorker.cpp
+    src/HomographyWorker.h
     src/TracksModel.cpp
     src/TracksModel.h
     src/TrackingManager.cpp
