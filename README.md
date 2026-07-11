@@ -17,11 +17,47 @@ El chip del top bar indica `PROJECT SAVED` / `UNSAVED CHANGES`; click (o
 `<carpeta del video>/<nombre>_project/`. El proyecto se recarga al reabrir
 el mismo video.
 
+## Proyectos multi-video
+
+Un partido (proyecto) puede tener varios videos con rol: **Feed de TV**,
+**Cámara táctica**, **Cámara panorámica** u **Otra**; y con segmento:
+**Video completo**, **Primer/Segundo tiempo**, **Tiempos extra**,
+**Penales** o **Parciales** (indica qué parte del partido cubre el video,
+y por tanto si contiene su inicio y fin). El menú **Project ▾** del top
+bar permite crear un proyecto nuevo vacío ("＋ New project": el primer
+video se agrega después), abrir proyectos registrados, cambiar entre los
+videos del proyecto actual y agregar un video nuevo eligiendo rol y
+segmento en dos pasos.
+
+Cada periodo tiene marcadores de inicio/fin propios (1T/2T/ET1/ET2/
+Penales, además de Match start/end): el tracking corre solo dentro de la
+unión de ventanas de juego, así que el medio tiempo entre "1T fin" y
+"2T inicio" (o cualquier gap entre periodos) queda excluido igual que los
+comerciales.
+
+Un video puede contener hasta 4 vistas de cámara: al agregarlo se pide
+seleccionar la **esquina superior izquierda** y la **inferior derecha**
+de la vista (dos clicks sobre el video; también desde "set" en el panel).
+**El mismo archivo puede agregarse varias veces al proyecto**, una entrada
+por vista (cada una con su rol, segmento, crop, marcadores y tracking
+propios); el menú las distingue con el tamaño de la vista (✂960×540) y
+las abre por su id, no por ruta.
+Ese crop lo aplica el preprocesado a 20 fps, así que chunks, tracking y
+OCR trabajan sobre la vista recortada (el overlay de detecciones re-mapea
+al frame completo automáticamente). Cambiar el crop regresa el status a
+`registered` (hay que re-preprocesar).
+
+Los artefactos de cada video llevan sufijo `_<id de video con 2 ceros>`:
+`video_chunks_01/`, `lineups_01/`, `video_chunks_metadata_01/`,
+`preprocessed_20fps_01.mp4`, `markers_01.json`, etc. (los archivos viejos
+sin sufijo se migran solos al video 1).
+
 ## Panel de operaciones de video (vista Video, lado izquierdo)
 
-Cada video abierto se registra con un id en `LOCAL_DATA/matches/games.json`
-(status y referencias) y obtiene su carpeta
-`LOCAL_DATA/matches/match_<id con 4 ceros>/` (p. ej. `match_0001/`).
+Cada video abierto se registra en `LOCAL_DATA/matches/games.json`
+(entrada `videos[]` por partido, con rol, crop y status por video) y el
+partido obtiene su carpeta
+`LOCAL_DATA/matches/match_<id con 4 ceros>/` (p. ej. `match_0002/`).
 
 - **Frame markers**: marca el frame actual como inicio/fin del partido,
   alineación A/B, banca A/B, o inicio/fin de comercial. Se guardan en

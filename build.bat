@@ -14,7 +14,7 @@ if "%VCPKG_INSTALLED%"=="" set VCPKG_INSTALLED=%~dp0vcpkg_installed
 
 set PATH=%MINGW_DIR:/=\%\bin;C:\Qt\Tools\Ninja;%PATH%
 
-cmake -S . -B "%BUILD_DIR%" -G Ninja ^
+cmake -S "%~dp0." -B "%~dp0%BUILD_DIR%" -G Ninja ^
     -DCMAKE_BUILD_TYPE=%BUILD_TYPE% ^
     -DCMAKE_PREFIX_PATH="%QT_DIR%" ^
     -DCMAKE_CXX_COMPILER="%MINGW_DIR%/bin/g++.exe" ^
@@ -24,7 +24,7 @@ cmake -S . -B "%BUILD_DIR%" -G Ninja ^
     -DVCPKG_INSTALLED_DIR="%VCPKG_INSTALLED%" %*
 if errorlevel 1 exit /b %errorlevel%
 
-cmake --build "%BUILD_DIR%"
+cmake --build "%~dp0%BUILD_DIR%"
 if errorlevel 1 exit /b %errorlevel%
 
 echo.
