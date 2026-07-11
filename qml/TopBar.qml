@@ -1,7 +1,8 @@
 import QtQuick
 import QtQuick.Controls
+import QtQuick.Dialogs
 
-// Top bar: logo, match label, open button, save status chip, avatar.
+// Top bar: logo, match label, project menu, open button, save chip, avatar.
 Rectangle {
     id: bar
     height: 56
@@ -9,6 +10,17 @@ Rectangle {
 
     signal openRequested()
     signal saveRequested()
+
+    // Lives here (not inside the project menu popup): a dialog opened
+    // while its parent popup closes may never show.
+    FileDialog {
+        id: addVideoDialog
+        title: "Add video to project"
+        nameFilters: ["Video files (*.mp4 *.mov *.mkv *.avi *.m4v)", "All files (*)"]
+        property string role: "other"
+        property string segment: "full"
+        onAccepted: App.addVideoToProject(selectedFile, role, segment)
+    }
 
     Rectangle { anchors.bottom: parent.bottom; width: parent.width; height: 1; color: Theme.border }
 
@@ -63,7 +75,41 @@ Rectangle {
         anchors.rightMargin: 20
         spacing: 12
 
-        // Open video
+        // Project menu: open projects, switch videos, add a video by role.
+        Rectangle {
+            id: projectBtn
+            width: projectLabel.implicitWidth + 24; height: 30; radius: 8
+            color: projectMouse.containsMouse || projectMenu.visible
+                ? Theme.borderHi : Theme.surfaceHi
+            anchors.verticalCenter: parent.verticalCenter
+            Text {
+                id: projectLabel
+                text: App.match.registered
+                    ? "Project #" + App.match.matchId + " ▾" : "Project ▾"
+                color: Theme.textBright
+                font { family: Theme.fontUi; pixelSize: 12; weight: Font.DemiBold }
+                anchors.centerIn: parent
+            }
+            MouseArea {
+                id: projectMouse
+                anchors.fill: parent
+                hoverEnabled: true
+                cursorShape: Qt.PointingHandCursor
+                onClicked: projectMenu.visible ? projectMenu.close() : projectMenu.open()
+            }
+            ProjectMenu {
+                id: projectMenu
+                y: parent.height + 6
+                x: parent.width - width
+                onAddVideoRequested: (role, segment) => {
+                    addVideoDialog.role = role
+                    addVideoDialog.segment = segment
+                    addVideoDialog.open()
+                }
+            }
+        }
+
+        // Open video (standalone: registers a new project)
         Rectangle {
             width: openLabel.implicitWidth + 24; height: 30; radius: 8
             color: openMouse.containsMouse ? Theme.borderHi : Theme.surfaceHi

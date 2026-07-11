@@ -2,6 +2,7 @@
 #define VIDEOOPSWORKER_H
 
 #include <QThread>
+#include <QRect>
 #include <QString>
 #include <QVariantMap>
 #include <atomic>
@@ -28,9 +29,12 @@ public:
     explicit VideoOpsWorker(QObject *parent = nullptr);
     ~VideoOpsWorker() override;
 
-    // excludedSec: [start,end] ranges in seconds of video time that the
-    // Track op must skip.
-    void configure(Op op, const QString &sourcePath, const QString &matchDir,
+    // crop: optional view rect (original pixels) applied by Preprocess —
+    // and by Chunk when it falls back to the original source. excludedSec:
+    // [start,end] ranges in seconds of video time that the Track op skips.
+    void configure(Op op, const QString &sourcePath,
+                   const QString &preprocessedPath, const QString &chunksDir,
+                   const QRect &crop,
                    const std::vector<std::pair<double, double>> &excludedSec);
     void requestStop() { m_stop.store(true); }
     void stopAndWait();
@@ -50,7 +54,9 @@ private:
 
     Op      m_op{Preprocess};
     QString m_sourcePath;
-    QString m_matchDir;
+    QString m_preprocessedPath;
+    QString m_chunksDir;
+    QRect   m_crop;
     std::vector<std::pair<double, double>> m_excluded;
     std::atomic<bool> m_stop{false};
 };

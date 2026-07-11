@@ -5,6 +5,7 @@
 #include <QHash>
 #include <QMutex>
 #include <QPair>
+#include <QPoint>
 #include <QVariantList>
 #include <QVariantMap>
 #include <QString>
@@ -45,10 +46,15 @@ public:
     void setExclusions(const QVector<QPair<int, int>> &frameRanges);
 
     // Populate the tab from the persisted per-chunk tracking CSVs
-    // (video_chunks/video_part_NNN.csv) so previous offline runs show up.
-    // GUI thread only; no-op while a live run is in progress.
-    void loadFromChunkCsvs(const QString &chunksDir, double durationSec,
+    // (video_chunks_<NN>/video_part_NNN.csv) so previous offline runs show
+    // up. GUI thread only; no-op while a live run is in progress.
+    void loadFromChunkCsvs(const QString &chunksDir, const QString &metadataDir,
+                           const QString &assignmentsPath, double durationSec,
                            const std::vector<std::pair<double, double>> &excludedSec);
+
+    // Chunk tracking runs in cropped-view space; the player shows the full
+    // frame. detectionsAt() adds this offset to every box.
+    void setDetectionOffset(const QPoint &offset) { m_detOffset = offset; }
 
     bool hasDetections() const { return !m_detsBySlot.isEmpty(); }
 
@@ -131,6 +137,8 @@ private:
     QHash<QString, QVariantMap> m_assignments;   // "NNN-Txx" -> {number,name,team}
     QHash<QString, QVariantMap> m_inferred;      // same shape, derived
     QString m_assignmentsPath;
+    QString m_metadataDirPath;
+    QPoint  m_detOffset;
 
     // GUI-thread state (updated only via queued applySnapshot).
     bool         m_runningInference{false};

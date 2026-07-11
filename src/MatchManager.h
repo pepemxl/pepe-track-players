@@ -2,7 +2,9 @@
 #define MATCHMANAGER_H
 
 #include <QDateTime>
+#include <QJsonArray>
 #include <QObject>
+#include <QRect>
 #include <QString>
 #include <QVariantList>
 #include <QVariantMap>
@@ -12,12 +14,18 @@
 class VideoOpsWorker;
 class LineupExtractor;
 
-// Per-video match registry + frame markers + offline video operations.
+// Match ("project") registry + frame markers + offline video operations.
 //
-// Every opened video gets an id in LOCAL_DATA/matches/games.json and a data
-// folder LOCAL_DATA/matches/match_<id>/. Frame markers (match start/end,
-// lineups, benches, commercial ranges) live in that folder as markers.json;
-// commercial ranges are excluded from chunk tracking.
+// A match can hold several videos (TV feed, tactical camera, panoramic
+// camera, other). Every opened video gets an id inside its match in
+// LOCAL_DATA/matches/games.json, and its artifacts live in the match dir
+// LOCAL_DATA/matches/match_<id 4 ceros>/ with a per-video suffix:
+//   preprocessed_20fps_<NN>.mp4, video_chunks_<NN>/, lineups_<NN>/,
+//   lineups_<NN>.json, video_chunks_metadata_<NN>/, markers_<NN>.json,
+//   track_assignments_<NN>.json
+// A video may contain several camera views: an optional crop rect
+// (top-left / bottom-right corners) selects the view; the 20 fps
+// preprocess applies it, so chunks and tracking work in cropped space.
 class MatchManager : public QObject
 {
     Q_OBJECT
@@ -26,6 +34,13 @@ class MatchManager : public QObject
     Q_PROPERTY(QString status READ status NOTIFY matchChanged)
     Q_PROPERTY(QString matchDir READ matchDir NOTIFY matchChanged)
     Q_PROPERTY(int chunkCount READ chunkCount NOTIFY matchChanged)
+    Q_PROPERTY(int videoId READ videoId NOTIFY matchChanged)
+    Q_PROPERTY(QString videoRole READ videoRole NOTIFY matchChanged)
+    Q_PROPERTY(QString videoSegment READ videoSegment NOTIFY matchChanged)
+    Q_PROPERTY(QVariantList videos READ videos NOTIFY matchChanged)
+    Q_PROPERTY(bool hasCrop READ hasCrop NOTIFY matchChanged)
+    Q_PROPERTY(QRect crop READ crop NOTIFY matchChanged)
+    Q_PROPERTY(bool cropPending READ cropPending NOTIFY matchChanged)
     Q_PROPERTY(QVariantList markers READ markers NOTIFY markersChanged)
     Q_PROPERTY(int matchStartFrame READ matchStartFrame NOTIFY markersChanged)
     Q_PROPERTY(int matchEndFrame READ matchEndFrame NOTIFY markersChanged)
@@ -48,25 +63,53 @@ public:
     QString status() const { return m_status; }
     QString matchDir() const { return m_matchDir; }
     int chunkCount() const { return m_chunkCount; }
+    int videoId() const { return m_videoId; }
+    QString videoRole() const { return m_videoRole; }
+    QString videoSegment() const { return m_videoSegment; }
+    QVariantList videos() const;
+    bool hasCrop() const { return m_crop.isValid() && !m_crop.isEmpty(); }
+    QRect crop() const { return m_crop; }
+    bool cropPending() const { return m_cropPending; }
     QVariantList markers() const { return m_markers; }
-    int matchStartFrame() const;   // first match_start marker, -1 if none
-    int matchEndFrame() const;     // first match_end marker, -1 if none
+    int matchStartFrame() const;
+    int matchEndFrame() const;
     bool hasLineupMarkers() const;
     bool lineupsExtracted() const { return m_lineupsExtracted; }
-
-    // Video-time ranges excluded from tracking: before match_start, after
-    // match_end, and every commercial range.
-    std::vector<std::pair<double, double>> excludedRangesSec() const;
-    QVector<QPair<int, int>> excludedFrameRanges() const;
-
-    // Contents of <matchDir>/lineups.json (empty map if absent), same
-    // shape as the lineupsReady payload.
-    QVariantMap loadLineups() const;
-    QDateTime lineupsModified() const;
     bool opRunning() const { return m_opRunning; }
     QString opLabel() const { return m_opLabel; }
     double opProgress() const { return m_opProgress; }
     QString lastError() const { return m_lastError; }
+
+    // Per-video artifact paths (suffix "_<NN>" from the current video id).
+    QString videoSuffix() const;
+    QString preprocessedFile() const;
+    QString chunksDir() const;
+    QString chunksMetadataDir() const;
+    QString lineupsDir() const;
+    QString lineupsJsonPath() const;
+    QString markersPath() const;
+    QString assignmentsPath() const;
+
+    // Projects menu support.
+    Q_INVOKABLE QVariantList listProjects() const;
+    // Creates an empty project (no videos yet) and makes it current; the
+    // first video arrives later through prepareAddVideo(). Returns its id.
+    Q_INVOKABLE int createProject();
+    // The next setVideo() adds the video to the current match with a role
+    // ("tv_feed" | "tactical" | "panoramic" | "other") and a segment
+    // ("full" | "first_half" | "second_half" | "extra1" | "extra2" |
+    //  "penalties" | "partial_first_half" | "partial_second_half")
+    // instead of registering a new match.
+    Q_INVOKABLE void prepareAddVideo(const QString &role,
+                                     const QString &segment = QStringLiteral("full"));
+    // The next setVideo() resolves to this exact project video entry.
+    // Needed because the same file can appear several times in a project
+    // (one entry per camera view/crop), so path lookup is ambiguous.
+    Q_INVOKABLE void prepareOpenVideo(int matchId, int videoId);
+
+    // View crop (original-video pixels). Cleared crop = full frame.
+    Q_INVOKABLE void setCrop(int x, int y, int width, int height);
+    Q_INVOKABLE void clearCrop();
 
     Q_INVOKABLE void addMarker(const QString &type, int frame);
     Q_INVOKABLE void removeMarker(int index);
@@ -76,6 +119,15 @@ public:
     Q_INVOKABLE void trackChunks();
     Q_INVOKABLE void extractLineups();
     Q_INVOKABLE void cancelOp();
+
+    // Video-time ranges excluded from tracking: before match_start, after
+    // match_end, and every commercial range.
+    std::vector<std::pair<double, double>> excludedRangesSec() const;
+    QVector<QPair<int, int>> excludedFrameRanges() const;
+
+    // Contents of lineups_<NN>.json (empty map if absent).
+    QVariantMap loadLineups() const;
+    QDateTime lineupsModified() const;
 
 signals:
     void matchChanged();
@@ -93,6 +145,7 @@ private:
 
     void registerOrLoad();
     void updateGamesEntry();
+    void migrateLegacyArtifacts();
     void loadMarkers();
     void saveMarkers();
     std::vector<std::pair<double, double>> commercialRangesSec() const;
@@ -110,11 +163,25 @@ private:
     int     m_totalFrames{0};
 
     int     m_matchId{0};
+    int     m_videoId{0};
+    QString m_videoRole;
+    QString m_videoSegment;
+    QRect   m_crop;
+    bool    m_cropPending{false};
     QString m_status;
     QString m_matchDir;
     int     m_chunkCount{0};
     QString m_preprocessedPath;
+    QJsonArray m_videosJson;       // all video entries of the current match
     QVariantList m_markers;
+
+    // Pending "add video to project" request (from the projects menu).
+    int     m_pendingAddMatchId{0};
+    QString m_pendingAddRole;
+    QString m_pendingAddSegment;
+    // Pending "open this exact project video" request.
+    int     m_pendingOpenMatchId{0};
+    int     m_pendingOpenVideoId{0};
 
     bool    m_opRunning{false};
     QString m_opLabel;

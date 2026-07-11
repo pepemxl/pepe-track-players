@@ -88,8 +88,9 @@ QVariantList TrackingManager::detectionsAt(double sec) const
         QVariantMap m;
         m[QStringLiteral("trackId")] = d.trackId;
         m[QStringLiteral("key")] = trackKey(chunkNumber, d.trackId);
-        m[QStringLiteral("x")] = d.x;
-        m[QStringLiteral("y")] = d.y;
+        // Boxes live in cropped-view space; shift into full-frame space.
+        m[QStringLiteral("x")] = d.x + m_detOffset.x();
+        m[QStringLiteral("y")] = d.y + m_detOffset.y();
         m[QStringLiteral("w")] = d.w;
         m[QStringLiteral("h")] = d.h;
         m[QStringLiteral("conf")] = d.conf;
@@ -121,10 +122,7 @@ int TrackingManager::chunkOfKey(const QString &key)
 
 QString TrackingManager::metadataDir() const
 {
-    if (m_assignmentsPath.isEmpty())
-        return {};
-    return QFileInfo(m_assignmentsPath).path()
-           + QStringLiteral("/video_chunks_metadata");
+    return m_metadataDirPath;
 }
 
 void TrackingManager::writeChunkMetadata(int chunkNumber) const
@@ -521,6 +519,8 @@ void TrackingManager::setSource(const QString &path)
     m_assignments.clear();
     m_inferred.clear();
     m_assignmentsPath.clear();
+    m_metadataDirPath.clear();
+    m_detOffset = QPoint();
     m_completed = false;
     m_progress = 0.0;
     m_framesProcessed = 0;
@@ -542,7 +542,8 @@ void TrackingManager::setExclusions(const QVector<QPair<int, int>> &frameRanges)
     m_exclRanges = frameRanges;
 }
 
-void TrackingManager::loadFromChunkCsvs(const QString &chunksDir, double durationSec,
+void TrackingManager::loadFromChunkCsvs(const QString &chunksDir, const QString &metadataDir,
+                                        const QString &assignmentsPath, double durationSec,
                                         const std::vector<std::pair<double, double>> &excludedSec)
 {
     if (m_runningInference || durationSec <= 0.0)
@@ -554,10 +555,8 @@ void TrackingManager::loadFromChunkCsvs(const QString &chunksDir, double duratio
     m_detsBySlot.clear();
     m_inferred.clear();
 
-    // Player-to-track assignments live next to the chunks, in the match dir.
-    QDir matchDir(chunksDir);
-    matchDir.cdUp();
-    m_assignmentsPath = matchDir.filePath(QStringLiteral("track_assignments.json"));
+    m_assignmentsPath = assignmentsPath;
+    m_metadataDirPath = metadataDir;
     loadAssignments();
 
     constexpr double kChunkFps = 10.0;

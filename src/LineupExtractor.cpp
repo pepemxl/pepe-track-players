@@ -21,12 +21,13 @@ LineupExtractor::~LineupExtractor()
     stopAndWait();
 }
 
-void LineupExtractor::configure(const QString &videoPath, const QString &matchDir,
-                                const QVector<Job> &jobs)
+void LineupExtractor::configure(const QString &videoPath, const QString &outDir,
+                                const QVector<Job> &jobs, const QRect &crop)
 {
     m_videoPath = videoPath;
-    m_matchDir = matchDir;
+    m_outDir = outDir;
     m_jobs = jobs;
+    m_crop = crop;
     m_stop.store(false);
 }
 
@@ -179,7 +180,7 @@ void LineupExtractor::run()
         return;
     }
 
-    const QString outDir = m_matchDir + QStringLiteral("/lineups");
+    const QString outDir = m_outDir;
     QDir().mkpath(outDir);
 
     QVariantList teamA, teamB;
@@ -197,6 +198,13 @@ void LineupExtractor::run()
         cv::Mat frame;
         if (!cap.read(frame) || frame.empty())
             continue;
+        if (m_crop.isValid() && !m_crop.isEmpty()) {
+            const cv::Rect view = cv::Rect(m_crop.x(), m_crop.y(),
+                                           m_crop.width(), m_crop.height())
+                                  & cv::Rect(0, 0, frame.cols, frame.rows);
+            if (view.area() > 0)
+                frame = frame(view);
+        }
 
         // BMP: the only codec guaranteed in this OpenCV build (no libpng).
         const QString bmp = outDir + QStringLiteral("/%1_f%2.bmp").arg(job.type).arg(job.frame);

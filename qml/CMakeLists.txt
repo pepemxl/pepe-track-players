@@ -13,6 +13,7 @@ qt_add_qml_module(pepetrack_qml
         Main.qml
         Theme.qml
         TopBar.qml
+        ProjectMenu.qml
         SideNav.qml
         NavItem.qml
         VideoSurface.qml

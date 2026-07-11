@@ -17,6 +17,7 @@
 #include <QJsonObject>
 #include <QTextStream>
 #include <QVariantMap>
+#include <algorithm>
 #include <cmath>
 
 namespace {
@@ -118,9 +119,12 @@ AppController::AppController(QObject *parent)
     // Show persisted chunk-tracking results in the Tracking tab, both when
     // a tracked video is opened and right after a Track chunks op finishes.
     auto refreshFromChunks = [this]() {
+        const QRect crop = m_match->crop();
+        m_tracking->setDetectionOffset(m_match->hasCrop() ? crop.topLeft() : QPoint());
         if (m_match->status() == QLatin1String("tracked")) {
             m_tracking->loadFromChunkCsvs(
-                m_match->matchDir() + QStringLiteral("/video_chunks"),
+                m_match->chunksDir(), m_match->chunksMetadataDir(),
+                m_match->assignmentsPath(),
                 m_durationSec, m_match->excludedRangesSec());
         }
     };
@@ -179,6 +183,40 @@ void AppController::openVideo(const QUrl &url)
     loadProjectIfPresent();
 
     emit playingChanged();
+}
+
+void AppController::openVideoFile(const QString &path)
+{
+    openVideo(QUrl::fromLocalFile(path));
+}
+
+void AppController::openProjectVideo(int matchId, int videoId, const QString &path)
+{
+    m_match->prepareOpenVideo(matchId, videoId);
+    openVideo(QUrl::fromLocalFile(path));
+}
+
+void AppController::addVideoToProject(const QUrl &url, const QString &role,
+                                      const QString &segment)
+{
+    m_match->prepareAddVideo(role, segment);
+    openVideo(url);
+}
+
+void AppController::setVideoCrop(double x1, double y1, double x2, double y2)
+{
+    const int x = static_cast<int>(std::min(x1, x2));
+    const int y = static_cast<int>(std::min(y1, y2));
+    const int w = static_cast<int>(std::abs(x2 - x1));
+    const int h = static_cast<int>(std::abs(y2 - y1));
+    if (w < 16 || h < 16)
+        return;   // degenerate selection
+    m_match->setCrop(x, y, w, h);
+}
+
+void AppController::clearVideoCrop()
+{
+    m_match->clearCrop();
 }
 
 void AppController::togglePlay()

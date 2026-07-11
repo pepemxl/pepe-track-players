@@ -2,6 +2,7 @@
 #define LINEUPEXTRACTOR_H
 
 #include <QThread>
+#include <QRect>
 #include <QString>
 #include <QVariantList>
 #include <QVariantMap>
@@ -27,8 +28,10 @@ public:
     explicit LineupExtractor(QObject *parent = nullptr);
     ~LineupExtractor() override;
 
-    void configure(const QString &videoPath, const QString &matchDir,
-                   const QVector<Job> &jobs);
+    // outDir: where the grabbed frames land. crop: optional view rect
+    // applied before OCR (multi-view videos).
+    void configure(const QString &videoPath, const QString &outDir,
+                   const QVector<Job> &jobs, const QRect &crop = QRect());
     void requestStop() { m_stop.store(true); }
     void stopAndWait();
 
@@ -49,8 +52,9 @@ private:
     static QString detectTeamName(const QStringList &lines);
 
     QString m_videoPath;
-    QString m_matchDir;
+    QString m_outDir;
     QVector<Job> m_jobs;
+    QRect m_crop;
     std::atomic<bool> m_stop{false};
 };
 

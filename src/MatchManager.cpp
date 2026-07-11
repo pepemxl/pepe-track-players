@@ -3,16 +3,90 @@
 #include "LineupExtractor.h"
 
 #include <QCoreApplication>
-#include <QDateTime>
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
-#include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QVariantMap>
 #include <algorithm>
 #include <climits>
+
+namespace {
+
+const QStringList kRoles = {
+    QStringLiteral("tv_feed"), QStringLiteral("tactical"),
+    QStringLiteral("panoramic"), QStringLiteral("other"),
+};
+
+QString sanitizeRole(const QString &role)
+{
+    return kRoles.contains(role) ? role : QStringLiteral("other");
+}
+
+const QStringList kSegments = {
+    QStringLiteral("full"), QStringLiteral("first_half"),
+    QStringLiteral("second_half"), QStringLiteral("extra1"),
+    QStringLiteral("extra2"), QStringLiteral("penalties"),
+    QStringLiteral("partial_first_half"), QStringLiteral("partial_second_half"),
+};
+
+QString sanitizeSegment(const QString &segment)
+{
+    return kSegments.contains(segment) ? segment : QStringLiteral("full");
+}
+
+// "*_start"/"*_end" markers (other than commercials) open/close a play
+// period; tracking only runs inside play periods.
+bool isPeriodStart(const QString &type)
+{
+    return type.endsWith(QLatin1String("_start"))
+           && type != QLatin1String("commercial_start");
+}
+
+bool isPeriodEnd(const QString &type)
+{
+    return type.endsWith(QLatin1String("_end"))
+           && type != QLatin1String("commercial_end");
+}
+
+// Old entries carried a single "video" path with match-level status; new
+// entries hold a "videos" array with per-video state.
+QJsonObject normalizedMatchEntry(const QJsonObject &entry)
+{
+    QJsonObject out = entry;
+    if (!out.contains(QStringLiteral("videos"))) {
+        QJsonObject video;
+        video[QStringLiteral("id")]           = 1;
+        video[QStringLiteral("role")]         = QStringLiteral("tv_feed");
+        video[QStringLiteral("segment")]      = QStringLiteral("full");
+        video[QStringLiteral("path")]         = entry[QStringLiteral("video")].toString();
+        video[QStringLiteral("status")]       = entry[QStringLiteral("status")].toString();
+        video[QStringLiteral("fps")]          = entry[QStringLiteral("fps")].toDouble();
+        video[QStringLiteral("total_frames")] = entry[QStringLiteral("total_frames")].toInt();
+        video[QStringLiteral("preprocessed")] = entry[QStringLiteral("preprocessed")].toString();
+        video[QStringLiteral("chunks")]       = entry[QStringLiteral("chunks")].toInt();
+        QJsonArray videos;
+        videos.append(video);
+        out[QStringLiteral("videos")] = videos;
+        out.remove(QStringLiteral("video"));
+        out.remove(QStringLiteral("status"));
+        out.remove(QStringLiteral("fps"));
+        out.remove(QStringLiteral("total_frames"));
+        out.remove(QStringLiteral("preprocessed"));
+        out.remove(QStringLiteral("chunks"));
+    }
+    return out;
+}
+
+QRect cropFromJson(const QJsonObject &video)
+{
+    const QJsonObject c = video[QStringLiteral("crop")].toObject();
+    return QRect(c[QStringLiteral("x")].toInt(), c[QStringLiteral("y")].toInt(),
+                 c[QStringLiteral("w")].toInt(), c[QStringLiteral("h")].toInt());
+}
+
+} // namespace
 
 MatchManager::MatchManager(QObject *parent)
     : QObject(parent)
@@ -65,6 +139,50 @@ QString MatchManager::matchDirName() const
     return QStringLiteral("match_%1").arg(m_matchId, 4, 10, QLatin1Char('0'));
 }
 
+QString MatchManager::videoSuffix() const
+{
+    return QStringLiteral("_%1").arg(m_videoId, 2, 10, QLatin1Char('0'));
+}
+
+QString MatchManager::preprocessedFile() const
+{
+    return m_matchDir + QStringLiteral("/preprocessed_20fps") + videoSuffix()
+           + QStringLiteral(".mp4");
+}
+
+QString MatchManager::chunksDir() const
+{
+    return m_matchDir + QStringLiteral("/video_chunks") + videoSuffix();
+}
+
+QString MatchManager::chunksMetadataDir() const
+{
+    return m_matchDir + QStringLiteral("/video_chunks_metadata") + videoSuffix();
+}
+
+QString MatchManager::lineupsDir() const
+{
+    return m_matchDir + QStringLiteral("/lineups") + videoSuffix();
+}
+
+QString MatchManager::lineupsJsonPath() const
+{
+    return m_matchDir + QStringLiteral("/lineups") + videoSuffix()
+           + QStringLiteral(".json");
+}
+
+QString MatchManager::markersPath() const
+{
+    return m_matchDir + QStringLiteral("/markers") + videoSuffix()
+           + QStringLiteral(".json");
+}
+
+QString MatchManager::assignmentsPath() const
+{
+    return m_matchDir + QStringLiteral("/track_assignments") + videoSuffix()
+           + QStringLiteral(".json");
+}
+
 void MatchManager::setVideo(const QString &path, double fps, int totalFrames)
 {
     m_worker->stopAndWait();
@@ -74,10 +192,16 @@ void MatchManager::setVideo(const QString &path, double fps, int totalFrames)
     m_fps = fps > 0.0 ? fps : 25.0;
     m_totalFrames = totalFrames;
     m_matchId = 0;
+    m_videoId = 0;
+    m_videoRole.clear();
+    m_videoSegment.clear();
+    m_crop = QRect();
+    m_cropPending = false;
     m_status.clear();
     m_matchDir.clear();
     m_chunkCount = 0;
     m_preprocessedPath.clear();
+    m_videosJson = QJsonArray();
     m_markers.clear();
     m_opRunning = false;
     m_opProgress = 0.0;
@@ -105,21 +229,99 @@ void MatchManager::registerOrLoad()
     }
 
     int maxId = 0;
-    for (const QJsonValue &v : matches) {
-        const QJsonObject o = v.toObject();
-        maxId = std::max(maxId, o[QStringLiteral("id")].toInt());
-        if (o[QStringLiteral("video")].toString() == m_videoPath) {
-            m_matchId = o[QStringLiteral("id")].toInt();
-            m_status = o[QStringLiteral("status")].toString();
-            m_chunkCount = o[QStringLiteral("chunks")].toInt();
-            m_preprocessedPath = o[QStringLiteral("preprocessed")].toString();
+    for (const QJsonValue &v : matches)
+        maxId = std::max(maxId, v.toObject()[QStringLiteral("id")].toInt());
+
+    auto loadVideoFields = [this](const QJsonObject &entry, const QJsonObject &video,
+                                  const QJsonArray &videos) {
+        m_matchId = entry[QStringLiteral("id")].toInt();
+        m_videoId = video[QStringLiteral("id")].toInt();
+        m_videoRole = sanitizeRole(video[QStringLiteral("role")].toString());
+        m_videoSegment = sanitizeSegment(video[QStringLiteral("segment")].toString());
+        m_status = video[QStringLiteral("status")].toString();
+        m_chunkCount = video[QStringLiteral("chunks")].toInt();
+        m_preprocessedPath = video[QStringLiteral("preprocessed")].toString();
+        m_crop = cropFromJson(video);
+        m_videosJson = videos;
+    };
+
+    // 1) Explicit open of one project video by (match, video id): resolves
+    //    duplicates when the same file holds several camera views.
+    if (m_pendingOpenMatchId > 0) {
+        for (const QJsonValue &v : matches) {
+            const QJsonObject entry = normalizedMatchEntry(v.toObject());
+            if (entry[QStringLiteral("id")].toInt() != m_pendingOpenMatchId)
+                continue;
+            const QJsonArray videos = entry[QStringLiteral("videos")].toArray();
+            for (const QJsonValue &vv : videos) {
+                const QJsonObject video = vv.toObject();
+                if (video[QStringLiteral("id")].toInt() == m_pendingOpenVideoId
+                        && video[QStringLiteral("path")].toString() == m_videoPath) {
+                    loadVideoFields(entry, video, videos);
+                    break;
+                }
+            }
+            break;
         }
     }
 
+    bool newVideo = false;
+    // 2) Add to the requested match: always a fresh entry — the same path
+    //    may repeat (another view of a multi-view file).
+    if (m_matchId == 0 && m_pendingAddMatchId > 0) {
+        for (const QJsonValue &v : matches) {
+            const QJsonObject entry = normalizedMatchEntry(v.toObject());
+            if (entry[QStringLiteral("id")].toInt() != m_pendingAddMatchId)
+                continue;
+            m_matchId = m_pendingAddMatchId;
+            m_videosJson = entry[QStringLiteral("videos")].toArray();
+            int maxVideoId = 0;
+            for (const QJsonValue &vv : m_videosJson)
+                maxVideoId = std::max(maxVideoId,
+                                      vv.toObject()[QStringLiteral("id")].toInt());
+            m_videoId = maxVideoId + 1;
+            m_videoRole = sanitizeRole(m_pendingAddRole);
+            m_videoSegment = sanitizeSegment(m_pendingAddSegment);
+            m_status = QStringLiteral("registered");
+            newVideo = true;
+            break;
+        }
+    }
+
+    // 3) Plain lookup by path (standalone open, CLI): first entry wins.
+    if (m_matchId == 0) {
+        for (const QJsonValue &v : matches) {
+            const QJsonObject entry = normalizedMatchEntry(v.toObject());
+            const QJsonArray videos = entry[QStringLiteral("videos")].toArray();
+            for (const QJsonValue &vv : videos) {
+                const QJsonObject video = vv.toObject();
+                if (video[QStringLiteral("path")].toString() == m_videoPath) {
+                    loadVideoFields(entry, video, videos);
+                    break;
+                }
+            }
+            if (m_matchId > 0)
+                break;
+        }
+    }
+
+    // 4) Brand-new match (project) with this as its first video.
     if (m_matchId == 0) {
         m_matchId = maxId + 1;
+        m_videoId = 1;
+        m_videoRole = QStringLiteral("tv_feed");
+        m_videoSegment = QStringLiteral("full");
         m_status = QStringLiteral("registered");
+        m_videosJson = QJsonArray();
+        newVideo = true;
     }
+    m_pendingAddMatchId = 0;
+    m_pendingAddRole.clear();
+    m_pendingAddSegment.clear();
+    m_pendingOpenMatchId = 0;
+    m_pendingOpenVideoId = 0;
+    m_cropPending = newVideo;
+
     m_matchDir = matchesDir() + QLatin1Char('/') + matchDirName();
     // Migrate a folder created before ids were zero-padded.
     const QString legacyDir = matchesDir() + QStringLiteral("/match_%1").arg(m_matchId);
@@ -127,13 +329,38 @@ void MatchManager::registerOrLoad()
         QDir().rename(legacyDir, m_matchDir);
     QDir().mkpath(m_matchDir);
 
-    // Normalize the preprocessed reference (it may carry a pre-padding dir).
-    if (QFile::exists(m_matchDir + QStringLiteral("/preprocessed_20fps.mp4")))
-        m_preprocessedPath = matchDirName() + QStringLiteral("/preprocessed_20fps.mp4");
+    migrateLegacyArtifacts();
 
-    m_lineupsExtracted = QFile::exists(m_matchDir + QStringLiteral("/lineups.json"));
+    // Normalize the preprocessed reference.
+    if (QFile::exists(preprocessedFile()))
+        m_preprocessedPath = matchDirName() + QStringLiteral("/preprocessed_20fps")
+                             + videoSuffix() + QStringLiteral(".mp4");
+
+    m_lineupsExtracted = QFile::exists(lineupsJsonPath());
 
     updateGamesEntry();
+}
+
+void MatchManager::migrateLegacyArtifacts()
+{
+    // Files written before the per-video suffix existed belong to video 1.
+    if (m_videoId != 1)
+        return;
+    const QList<QPair<QString, QString>> renames = {
+        { QStringLiteral("/markers.json"),            QStringLiteral("/markers_01.json") },
+        { QStringLiteral("/preprocessed_20fps.mp4"),  QStringLiteral("/preprocessed_20fps_01.mp4") },
+        { QStringLiteral("/video_chunks"),            QStringLiteral("/video_chunks_01") },
+        { QStringLiteral("/video_chunks_metadata"),   QStringLiteral("/video_chunks_metadata_01") },
+        { QStringLiteral("/lineups"),                 QStringLiteral("/lineups_01") },
+        { QStringLiteral("/lineups.json"),            QStringLiteral("/lineups_01.json") },
+        { QStringLiteral("/track_assignments.json"),  QStringLiteral("/track_assignments_01.json") },
+    };
+    for (const auto &[from, to] : renames) {
+        const QString src = m_matchDir + from;
+        const QString dst = m_matchDir + to;
+        if (QFileInfo::exists(src) && !QFileInfo::exists(dst))
+            QDir().rename(src, dst);
+    }
 }
 
 void MatchManager::updateGamesEntry()
@@ -146,16 +373,43 @@ void MatchManager::updateGamesEntry()
         file.close();
     }
 
+    // Current video entry.
+    QJsonObject video;
+    video[QStringLiteral("id")]           = m_videoId;
+    video[QStringLiteral("role")]         = m_videoRole;
+    video[QStringLiteral("segment")]      = m_videoSegment;
+    video[QStringLiteral("path")]         = m_videoPath;
+    video[QStringLiteral("status")]       = m_status;
+    video[QStringLiteral("fps")]          = m_fps;
+    video[QStringLiteral("total_frames")] = m_totalFrames;
+    video[QStringLiteral("preprocessed")] = m_preprocessedPath;
+    video[QStringLiteral("chunks")]       = m_chunkCount;
+    if (hasCrop()) {
+        QJsonObject c;
+        c[QStringLiteral("x")] = m_crop.x();
+        c[QStringLiteral("y")] = m_crop.y();
+        c[QStringLiteral("w")] = m_crop.width();
+        c[QStringLiteral("h")] = m_crop.height();
+        video[QStringLiteral("crop")] = c;
+    }
+
+    // Merge into the match's videos array.
+    bool videoReplaced = false;
+    for (int i = 0; i < m_videosJson.size(); ++i) {
+        if (m_videosJson[i].toObject()[QStringLiteral("id")].toInt() == m_videoId) {
+            m_videosJson[i] = video;
+            videoReplaced = true;
+            break;
+        }
+    }
+    if (!videoReplaced)
+        m_videosJson.append(video);
+
     QJsonObject entry;
-    entry[QStringLiteral("id")]           = m_matchId;
-    entry[QStringLiteral("video")]        = m_videoPath;
-    entry[QStringLiteral("status")]       = m_status;
-    entry[QStringLiteral("fps")]          = m_fps;
-    entry[QStringLiteral("total_frames")] = m_totalFrames;
-    entry[QStringLiteral("dir")]          = matchDirName();
-    entry[QStringLiteral("preprocessed")] = m_preprocessedPath;
-    entry[QStringLiteral("chunks")]       = m_chunkCount;
-    entry[QStringLiteral("updated")]      = QDateTime::currentDateTime().toString(Qt::ISODate);
+    entry[QStringLiteral("id")]      = m_matchId;
+    entry[QStringLiteral("dir")]     = matchDirName();
+    entry[QStringLiteral("videos")]  = m_videosJson;
+    entry[QStringLiteral("updated")] = QDateTime::currentDateTime().toString(Qt::ISODate);
 
     bool replaced = false;
     for (int i = 0; i < matches.size(); ++i) {
@@ -176,10 +430,168 @@ void MatchManager::updateGamesEntry()
     }
 }
 
+QVariantList MatchManager::videos() const
+{
+    QVariantList list;
+    for (const QJsonValue &v : m_videosJson) {
+        const QJsonObject video = v.toObject();
+        QVariantMap m;
+        m[QStringLiteral("id")]      = video[QStringLiteral("id")].toInt();
+        m[QStringLiteral("role")]    = video[QStringLiteral("role")].toString();
+        m[QStringLiteral("segment")] = sanitizeSegment(video[QStringLiteral("segment")].toString());
+        m[QStringLiteral("path")]    = video[QStringLiteral("path")].toString();
+        m[QStringLiteral("status")]  = video[QStringLiteral("status")].toString();
+        m[QStringLiteral("chunks")]  = video[QStringLiteral("chunks")].toInt();
+        m[QStringLiteral("current")] = video[QStringLiteral("id")].toInt() == m_videoId;
+        const QRect crop = cropFromJson(video);
+        m[QStringLiteral("view")] = crop.isValid() && !crop.isEmpty()
+            ? QStringLiteral("%1×%2").arg(crop.width()).arg(crop.height())
+            : QString();
+        list.append(m);
+    }
+    return list;
+}
+
+QVariantList MatchManager::listProjects() const
+{
+    QVariantList projects;
+    QFile file(gamesJsonPath());
+    if (!file.open(QIODevice::ReadOnly))
+        return projects;
+    const QJsonArray matches = QJsonDocument::fromJson(file.readAll())
+                                   .object()[QStringLiteral("matches")].toArray();
+    for (const QJsonValue &v : matches) {
+        const QJsonObject entry = normalizedMatchEntry(v.toObject());
+        QVariantMap m;
+        m[QStringLiteral("id")]  = entry[QStringLiteral("id")].toInt();
+        m[QStringLiteral("dir")] = entry[QStringLiteral("dir")].toString();
+        QVariantList videos;
+        for (const QJsonValue &vv : entry[QStringLiteral("videos")].toArray()) {
+            const QJsonObject video = vv.toObject();
+            QVariantMap vm;
+            vm[QStringLiteral("id")]      = video[QStringLiteral("id")].toInt();
+            vm[QStringLiteral("role")]    = video[QStringLiteral("role")].toString();
+            vm[QStringLiteral("segment")] = sanitizeSegment(video[QStringLiteral("segment")].toString());
+            vm[QStringLiteral("path")]    = video[QStringLiteral("path")].toString();
+            vm[QStringLiteral("status")]  = video[QStringLiteral("status")].toString();
+            videos.append(vm);
+        }
+        m[QStringLiteral("videos")] = videos;
+        projects.append(m);
+    }
+    return projects;
+}
+
+int MatchManager::createProject()
+{
+    m_worker->stopAndWait();
+    m_lineup->stopAndWait();
+    QDir().mkpath(matchesDir());
+
+    QJsonArray matches;
+    QFile file(gamesJsonPath());
+    if (file.open(QIODevice::ReadOnly)) {
+        matches = QJsonDocument::fromJson(file.readAll())
+                      .object()[QStringLiteral("matches")].toArray();
+        file.close();
+    }
+    int maxId = 0;
+    for (const QJsonValue &v : matches)
+        maxId = std::max(maxId, v.toObject()[QStringLiteral("id")].toInt());
+
+    // Empty project context: no current video until one is added.
+    m_matchId = maxId + 1;
+    m_videoId = 0;
+    m_videoPath.clear();
+    m_videoRole.clear();
+    m_videoSegment.clear();
+    m_crop = QRect();
+    m_cropPending = false;
+    m_status.clear();
+    m_chunkCount = 0;
+    m_preprocessedPath.clear();
+    m_videosJson = QJsonArray();
+    m_markers.clear();
+    m_lineupsExtracted = false;
+    m_lastError.clear();
+
+    m_matchDir = matchesDir() + QLatin1Char('/') + matchDirName();
+    QDir().mkpath(m_matchDir);
+
+    QJsonObject entry;
+    entry[QStringLiteral("id")]      = m_matchId;
+    entry[QStringLiteral("dir")]     = matchDirName();
+    entry[QStringLiteral("videos")]  = QJsonArray();
+    entry[QStringLiteral("updated")] = QDateTime::currentDateTime().toString(Qt::ISODate);
+    matches.append(entry);
+
+    QJsonObject root;
+    root[QStringLiteral("matches")] = matches;
+    if (file.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+        file.write(QJsonDocument(root).toJson(QJsonDocument::Indented));
+        file.close();
+    }
+
+    emit matchChanged();
+    emit markersChanged();
+    emit opStateChanged();
+    return m_matchId;
+}
+
+void MatchManager::prepareAddVideo(const QString &role, const QString &segment)
+{
+    if (!registered())
+        return;
+    m_pendingAddMatchId = m_matchId;
+    m_pendingAddRole = sanitizeRole(role);
+    m_pendingAddSegment = sanitizeSegment(segment);
+    m_pendingOpenMatchId = 0;
+    m_pendingOpenVideoId = 0;
+}
+
+void MatchManager::prepareOpenVideo(int matchId, int videoId)
+{
+    m_pendingOpenMatchId = matchId;
+    m_pendingOpenVideoId = videoId;
+    m_pendingAddMatchId = 0;
+    m_pendingAddRole.clear();
+    m_pendingAddSegment.clear();
+}
+
+void MatchManager::setCrop(int x, int y, int width, int height)
+{
+    if (!registered() || m_videoId <= 0 || width <= 0 || height <= 0)
+        return;
+    m_crop = QRect(x, y, width, height);
+    m_cropPending = false;
+    // Downstream artifacts were produced with the previous view.
+    if (m_status != QLatin1String("registered")) {
+        m_status = QStringLiteral("registered");
+        m_chunkCount = 0;
+    }
+    updateGamesEntry();
+    emit matchChanged();
+}
+
+void MatchManager::clearCrop()
+{
+    if (!registered() || m_videoId <= 0)
+        return;
+    const bool had = hasCrop();
+    m_crop = QRect();
+    m_cropPending = false;
+    if (had && m_status != QLatin1String("registered")) {
+        m_status = QStringLiteral("registered");
+        m_chunkCount = 0;
+    }
+    updateGamesEntry();
+    emit matchChanged();
+}
+
 void MatchManager::loadMarkers()
 {
     m_markers.clear();
-    QFile file(m_matchDir + QStringLiteral("/markers.json"));
+    QFile file(markersPath());
     if (!file.open(QIODevice::ReadOnly))
         return;
     const QJsonArray array = QJsonDocument::fromJson(file.readAll())
@@ -206,7 +618,7 @@ void MatchManager::saveMarkers()
     QJsonObject root;
     root[QStringLiteral("markers")] = array;
     root[QStringLiteral("fps")] = m_fps;
-    QFile file(m_matchDir + QStringLiteral("/markers.json"));
+    QFile file(markersPath());
     if (file.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
         file.write(QJsonDocument(root).toJson(QJsonDocument::Indented));
     }
@@ -214,7 +626,7 @@ void MatchManager::saveMarkers()
 
 void MatchManager::addMarker(const QString &type, int frame)
 {
-    if (!registered())
+    if (!registered() || m_videoId <= 0)
         return;
     QVariantMap m;
     m[QStringLiteral("type")]  = type;
@@ -249,12 +661,24 @@ int MatchManager::firstMarkerFrame(const QString &type) const
 
 int MatchManager::matchStartFrame() const
 {
-    return firstMarkerFrame(QStringLiteral("match_start"));
+    // First play-period start of any category (match, halves, extra
+    // times, penalties). m_markers is sorted by frame.
+    for (const QVariant &v : m_markers) {
+        const QVariantMap m = v.toMap();
+        if (isPeriodStart(m.value(QStringLiteral("type")).toString()))
+            return m.value(QStringLiteral("frame")).toInt();
+    }
+    return -1;
 }
 
 int MatchManager::matchEndFrame() const
 {
-    return firstMarkerFrame(QStringLiteral("match_end"));
+    for (int i = m_markers.size() - 1; i >= 0; --i) {
+        const QVariantMap m = m_markers.at(i).toMap();
+        if (isPeriodEnd(m.value(QStringLiteral("type")).toString()))
+            return m.value(QStringLiteral("frame")).toInt();
+    }
+    return -1;
 }
 
 bool MatchManager::hasLineupMarkers() const
@@ -273,12 +697,42 @@ bool MatchManager::hasLineupMarkers() const
 std::vector<std::pair<double, double>> MatchManager::excludedRangesSec() const
 {
     std::vector<std::pair<double, double>> ranges = commercialRangesSec();
-    const int start = matchStartFrame();
-    const int end = matchEndFrame();
-    if (start > 0)
-        ranges.emplace_back(0.0, start / m_fps);
-    if (end >= 0)
-        ranges.emplace_back(end / m_fps, 1e12);
+
+    // Play windows from every "*_start"/"*_end" period pair (match, halves,
+    // extra times, penalties): everything outside the union of play windows
+    // is excluded — including gaps like half-time between "1T fin" and
+    // "2T inicio". Without period markers, the whole video is play.
+    std::vector<std::pair<double, double>> play;
+    double open = -1.0;
+    for (const QVariant &v : m_markers) {   // sorted by frame
+        const QVariantMap m = v.toMap();
+        const QString type = m.value(QStringLiteral("type")).toString();
+        const double sec = m.value(QStringLiteral("frame")).toInt() / m_fps;
+        if (isPeriodStart(type)) {
+            if (open < 0.0)
+                open = sec;
+        } else if (isPeriodEnd(type)) {
+            if (open >= 0.0) {
+                play.emplace_back(open, sec);
+                open = -1.0;
+            } else {
+                play.emplace_back(0.0, sec);   // end without start: play from 0
+            }
+        }
+    }
+    if (open >= 0.0)
+        play.emplace_back(open, 1e12);   // start without end: play to the end
+
+    if (!play.empty()) {
+        double cursor = 0.0;
+        for (const auto &p : play) {
+            if (p.first > cursor)
+                ranges.emplace_back(cursor, p.first);
+            cursor = std::max(cursor, p.second);
+        }
+        if (cursor < 1e11)
+            ranges.emplace_back(cursor, 1e12);
+    }
     return ranges;
 }
 
@@ -321,10 +775,12 @@ std::vector<std::pair<double, double>> MatchManager::commercialRangesSec() const
 
 void MatchManager::startOp(int op)
 {
-    if (!registered() || m_opRunning || m_worker->isRunning() || m_lineup->isRunning())
+    if (!registered() || m_videoId <= 0 || m_opRunning
+            || m_worker->isRunning() || m_lineup->isRunning())
         return;
     m_worker->configure(static_cast<VideoOpsWorker::Op>(op),
-                        m_videoPath, m_matchDir, excludedRangesSec());
+                        m_videoPath, preprocessedFile(), chunksDir(), m_crop,
+                        excludedRangesSec());
     m_opRunning = true;
     m_opProgress = 0.0;
     m_opLabel = QStringLiteral("Starting…");
@@ -339,7 +795,8 @@ void MatchManager::trackChunks()  { startOp(VideoOpsWorker::Track); }
 
 void MatchManager::extractLineups()
 {
-    if (!registered() || m_opRunning || m_worker->isRunning() || m_lineup->isRunning())
+    if (!registered() || m_videoId <= 0 || m_opRunning
+            || m_worker->isRunning() || m_lineup->isRunning())
         return;
 
     QVector<LineupExtractor::Job> jobs;
@@ -358,7 +815,7 @@ void MatchManager::extractLineups()
         return;
     }
 
-    m_lineup->configure(m_videoPath, m_matchDir, jobs);
+    m_lineup->configure(m_videoPath, lineupsDir(), jobs, m_crop);
     m_opRunning = true;
     m_opProgress = 0.0;
     m_opLabel = QStringLiteral("Extracting lineups…");
@@ -387,7 +844,7 @@ void MatchManager::onLineupsFinished(bool ok, const QString &error, const QVaria
     root[QStringLiteral("teamB")] = b;
     root[QStringLiteral("teamNameA")] = result.value(QStringLiteral("teamNameA")).toString();
     root[QStringLiteral("teamNameB")] = result.value(QStringLiteral("teamNameB")).toString();
-    QFile file(m_matchDir + QStringLiteral("/lineups.json"));
+    QFile file(lineupsJsonPath());
     if (file.open(QIODevice::WriteOnly | QIODevice::Truncate))
         file.write(QJsonDocument(root).toJson(QJsonDocument::Indented));
     m_lineupsExtracted = true;
@@ -400,7 +857,7 @@ void MatchManager::onLineupsFinished(bool ok, const QString &error, const QVaria
 
 QVariantMap MatchManager::loadLineups() const
 {
-    QFile file(m_matchDir + QStringLiteral("/lineups.json"));
+    QFile file(lineupsJsonPath());
     if (m_matchDir.isEmpty() || !file.open(QIODevice::ReadOnly))
         return {};
     const QJsonObject o = QJsonDocument::fromJson(file.readAll()).object();
@@ -414,7 +871,7 @@ QVariantMap MatchManager::loadLineups() const
 
 QDateTime MatchManager::lineupsModified() const
 {
-    return QFileInfo(m_matchDir + QStringLiteral("/lineups.json")).lastModified();
+    return QFileInfo(lineupsJsonPath()).lastModified();
 }
 
 void MatchManager::cancelOp()
@@ -441,7 +898,8 @@ void MatchManager::onOpFinished(int op, bool ok, const QString &error, const QVa
 
     switch (op) {
     case VideoOpsWorker::Preprocess:
-        m_preprocessedPath = matchDirName() + QStringLiteral("/preprocessed_20fps.mp4");
+        m_preprocessedPath = matchDirName() + QStringLiteral("/preprocessed_20fps")
+                             + videoSuffix() + QStringLiteral(".mp4");
         m_status = QStringLiteral("preprocessed");
         break;
     case VideoOpsWorker::Chunk:

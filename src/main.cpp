@@ -56,7 +56,9 @@ static int runExtractLineups(const QString &videoPath)
 
 // Headless: print the video-time ranges both tracking paths will skip
 // (pre-match, post-match, commercials) for an already-marked video.
-static int runDumpExclusions(const QString &videoPath)
+// Optional matchId/videoId resolve one specific project video entry
+// (duplicated paths = several camera views of the same file).
+static int runDumpExclusions(const QString &videoPath, int matchId = 0, int videoId = 0)
 {
     cv::VideoCapture cap(videoPath.toStdString());
     double fps = cap.isOpened() ? cap.get(cv::CAP_PROP_FPS) : 25.0;
@@ -66,9 +68,18 @@ static int runDumpExclusions(const QString &videoPath)
     cap.release();
 
     MatchManager match;
+    if (matchId > 0 && videoId > 0)
+        match.prepareOpenVideo(matchId, videoId);
     match.setVideo(videoPath, fps, total);
-    std::fprintf(stdout, "match #%d, fps %.2f, %d frames\n",
-                 match.matchId(), fps, total);
+    std::fprintf(stdout, "match #%d video #%d (%s, %s), fps %.2f, %d frames\n",
+                 match.matchId(), match.videoId(),
+                 qPrintable(match.videoRole()), qPrintable(match.videoSegment()),
+                 fps, total);
+    if (match.hasCrop()) {
+        const QRect c = match.crop();
+        std::fprintf(stdout, "view crop: %dx%d @ (%d,%d)\n",
+                     c.width(), c.height(), c.x(), c.y());
+    }
     std::fprintf(stdout, "match window: frame %d .. %d\n",
                  match.matchStartFrame(), match.matchEndFrame());
     for (const auto &[a, b] : match.excludedRangesSec()) {
@@ -123,6 +134,8 @@ static int runMatchOp(const QString &videoPath, const QString &op)
 
     if (op == QLatin1String("track"))
         match.trackChunks();
+    else if (op == QLatin1String("preprocess"))
+        match.preprocess();
     else
         match.createChunks();
     if (!match.opRunning())
@@ -145,7 +158,8 @@ static int runInferIds(const QString &videoPath)
     match.setVideo(videoPath, fps, total);
     TrackingManager tracking;
     tracking.setSource(videoPath);
-    tracking.loadFromChunkCsvs(match.matchDir() + QStringLiteral("/video_chunks"),
+    tracking.loadFromChunkCsvs(match.chunksDir(), match.chunksMetadataDir(),
+                               match.assignmentsPath(),
                                total / fps, match.excludedRangesSec());
     if (!tracking.hasDetections()) {
         std::fprintf(stderr, "error: no chunk tracking data\n");
@@ -187,6 +201,36 @@ static int runLiveTracking(const QString &videoPath)
     return QCoreApplication::exec();
 }
 
+// Headless: register a video as a NEW entry of an existing project
+// ("pepe --add-video <video> <matchId> <role> <segment>"). The same file
+// may repeat (another camera view). Mirrors the GUI flow: the project
+// must be resolvable from the path (or already contain it).
+static int runAddVideo(const QString &videoPath, int matchId,
+                       const QString &role, const QString &segment)
+{
+    cv::VideoCapture cap(videoPath.toStdString());
+    double fps = cap.isOpened() ? cap.get(cv::CAP_PROP_FPS) : 25.0;
+    if (fps <= 0.0 || fps > 240.0) fps = 25.0;
+    const int total = cap.isOpened()
+        ? static_cast<int>(cap.get(cv::CAP_PROP_FRAME_COUNT)) : 0;
+    cap.release();
+
+    MatchManager match;
+    match.setVideo(videoPath, fps, total);   // make a project current
+    if (match.matchId() != matchId) {
+        std::fprintf(stderr, "error: path resolves to match #%d, not #%d\n",
+                     match.matchId(), matchId);
+        return 1;
+    }
+    match.prepareAddVideo(role, segment);    // same flow as the GUI menu
+    match.setVideo(videoPath, fps, total);
+    std::fprintf(stdout, "match #%d video #%d (%s, %s)\n",
+                 match.matchId(), match.videoId(),
+                 qPrintable(match.videoRole()), qPrintable(match.videoSegment()));
+    std::fflush(stdout);
+    return 0;
+}
+
 int main(int argc, char *argv[])
 {
     QGuiApplication app(argc, argv);
@@ -195,6 +239,8 @@ int main(int argc, char *argv[])
 
     {
         const QStringList args = app.arguments();
+        if (args.size() >= 6 && args.at(1) == QLatin1String("--add-video"))
+            return runAddVideo(args.at(2), args.at(3).toInt(), args.at(4), args.at(5));
         if (args.size() >= 3 && args.at(1) == QLatin1String("--live-track"))
             return runLiveTracking(args.at(2));
         if (args.size() >= 3 && args.at(1) == QLatin1String("--infer-ids"))
@@ -202,11 +248,15 @@ int main(int argc, char *argv[])
         if (args.size() >= 3 && args.at(1) == QLatin1String("--extract-lineups"))
             return runExtractLineups(args.at(2));
         if (args.size() >= 3 && args.at(1) == QLatin1String("--dump-exclusions"))
-            return runDumpExclusions(args.at(2));
+            return runDumpExclusions(args.at(2),
+                                     args.size() > 3 ? args.at(3).toInt() : 0,
+                                     args.size() > 4 ? args.at(4).toInt() : 0);
         if (args.size() >= 3 && args.at(1) == QLatin1String("--track-chunks"))
             return runMatchOp(args.at(2), QStringLiteral("track"));
         if (args.size() >= 3 && args.at(1) == QLatin1String("--create-chunks"))
             return runMatchOp(args.at(2), QStringLiteral("chunk"));
+        if (args.size() >= 3 && args.at(1) == QLatin1String("--preprocess"))
+            return runMatchOp(args.at(2), QStringLiteral("preprocess"));
     }
 
     // Basic style so QML can fully restyle the controls.

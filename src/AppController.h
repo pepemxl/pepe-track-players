@@ -80,6 +80,19 @@ public:
     QObject *matchObj() const;
 
     Q_INVOKABLE void openVideo(const QUrl &url);
+    Q_INVOKABLE void openVideoFile(const QString &path);
+    // Opens one specific project video entry (needed when the same file
+    // appears several times as different camera views).
+    Q_INVOKABLE void openProjectVideo(int matchId, int videoId, const QString &path);
+    // Registers the video in the current project with a role
+    // ("tv_feed" | "tactical" | "panoramic" | "other") and a segment
+    // ("full", "first_half", "second_half", "extra1", "extra2",
+    //  "penalties", "partial_first_half", "partial_second_half").
+    Q_INVOKABLE void addVideoToProject(const QUrl &url, const QString &role,
+                                       const QString &segment);
+    // View crop from two corners in video pixels (multi-view videos).
+    Q_INVOKABLE void setVideoCrop(double x1, double y1, double x2, double y2);
+    Q_INVOKABLE void clearVideoCrop();
     Q_INVOKABLE void togglePlay();
     Q_INVOKABLE void pause();
     Q_INVOKABLE void seekFrac(double frac);

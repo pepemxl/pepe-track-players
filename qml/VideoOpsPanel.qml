@@ -9,6 +9,8 @@ Rectangle {
     property bool collapsed: false
     readonly property var match: App.match
 
+    signal cropRequested()
+
     width: collapsed ? 32 : 252
     color: Theme.bgDark
     Behavior on width { NumberAnimation { duration: 140; easing.type: Easing.OutQuad } }
@@ -66,7 +68,7 @@ Rectangle {
             // ---- match registry chip ----
             Rectangle {
                 width: parent.width
-                height: 44
+                height: 58
                 radius: 8
                 color: Theme.surface
                 border.color: Theme.border
@@ -77,16 +79,62 @@ Rectangle {
                     anchors.leftMargin: 10
                     spacing: 2
                     Text {
-                        text: match.registered ? "MATCH #" + match.matchId : "NO MATCH"
+                        text: !match.registered ? "NO MATCH"
+                            : match.videoId > 0
+                                ? "MATCH #" + match.matchId + " · video " + match.videoId
+                                  + " (" + match.videoRole
+                                  + (match.videoSegment !== "full"
+                                     ? " · " + match.videoSegment : "") + ")"
+                                : "MATCH #" + match.matchId + " · no video"
                         color: Theme.text
-                        font { family: Theme.fontMono; pixelSize: 12; weight: Font.Bold }
+                        font { family: Theme.fontMono; pixelSize: 11; weight: Font.Bold }
                     }
                     Text {
-                        text: match.registered
-                            ? match.status + (match.chunkCount > 0 ? " · " + match.chunkCount + " chunks" : "")
-                            : "open a video to register"
+                        text: !match.registered ? "open a video to register"
+                            : match.videoId > 0
+                                ? match.status + (match.chunkCount > 0 ? " · " + match.chunkCount + " chunks" : "")
+                                : "add a video from the Project menu"
                         color: match.status === "tracked" ? Theme.greenBright : Theme.textDim
                         font { family: Theme.fontMono; pixelSize: 10 }
+                    }
+                    Row {
+                        spacing: 6
+                        Text {
+                            text: match.hasCrop
+                                ? "view " + match.crop.width + "×" + match.crop.height
+                                  + " @ (" + match.crop.x + "," + match.crop.y + ")"
+                                : "view: full frame"
+                            color: match.hasCrop ? Theme.orange : Theme.textDim
+                            font { family: Theme.fontMono; pixelSize: 10 }
+                        }
+                        Text {
+                            visible: match.registered && App.videoLoaded
+                            text: "set"
+                            color: setCropMouse.containsMouse ? Theme.greenBright : Theme.textMid
+                            font { family: Theme.fontUi; pixelSize: 10; weight: Font.Bold }
+                            MouseArea {
+                                id: setCropMouse
+                                anchors.fill: parent
+                                anchors.margins: -4
+                                hoverEnabled: true
+                                cursorShape: Qt.PointingHandCursor
+                                onClicked: panel.cropRequested()
+                            }
+                        }
+                        Text {
+                            visible: match.hasCrop
+                            text: "clear"
+                            color: clearCropMouse.containsMouse ? Theme.red : Theme.textMid
+                            font { family: Theme.fontUi; pixelSize: 10; weight: Font.Bold }
+                            MouseArea {
+                                id: clearCropMouse
+                                anchors.fill: parent
+                                anchors.margins: -4
+                                hoverEnabled: true
+                                cursorShape: Qt.PointingHandCursor
+                                onClicked: App.clearVideoCrop()
+                            }
+                        }
                     }
                 }
             }

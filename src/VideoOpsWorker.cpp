@@ -48,12 +48,16 @@ VideoOpsWorker::~VideoOpsWorker()
     stopAndWait();
 }
 
-void VideoOpsWorker::configure(Op op, const QString &sourcePath, const QString &matchDir,
+void VideoOpsWorker::configure(Op op, const QString &sourcePath,
+                               const QString &preprocessedPath, const QString &chunksDir,
+                               const QRect &crop,
                                const std::vector<std::pair<double, double>> &excludedSec)
 {
     m_op = op;
     m_sourcePath = sourcePath;
-    m_matchDir = matchDir;
+    m_preprocessedPath = preprocessedPath;
+    m_chunksDir = chunksDir;
+    m_crop = crop;
     m_excluded = excludedSec;
     m_stop.store(false);
 }
@@ -94,10 +98,20 @@ void VideoOpsWorker::runPreprocess()
     double srcFps = cap.get(cv::CAP_PROP_FPS);
     if (srcFps <= 0.0 || srcFps > 240.0) srcFps = 30.0;
     const int total = std::max(1, static_cast<int>(cap.get(cv::CAP_PROP_FRAME_COUNT)));
-    const cv::Size size(static_cast<int>(cap.get(cv::CAP_PROP_FRAME_WIDTH)),
-                        static_cast<int>(cap.get(cv::CAP_PROP_FRAME_HEIGHT)));
+    const cv::Size srcSize(static_cast<int>(cap.get(cv::CAP_PROP_FRAME_WIDTH)),
+                           static_cast<int>(cap.get(cv::CAP_PROP_FRAME_HEIGHT)));
 
-    const QString outPath = m_matchDir + QStringLiteral("/preprocessed_20fps.mp4");
+    // The selected camera view: clamp to the frame; empty = full frame.
+    cv::Rect view(0, 0, srcSize.width, srcSize.height);
+    if (m_crop.isValid() && !m_crop.isEmpty()) {
+        view = cv::Rect(m_crop.x(), m_crop.y(), m_crop.width(), m_crop.height())
+               & cv::Rect(0, 0, srcSize.width, srcSize.height);
+        if (view.area() <= 0)
+            view = cv::Rect(0, 0, srcSize.width, srcSize.height);
+    }
+    const cv::Size size(view.width, view.height);
+
+    const QString outPath = m_preprocessedPath;
     cv::VideoWriter writer(outPath.toStdString(),
                            cv::VideoWriter::fourcc('m', 'p', '4', 'v'),
                            kPreprocessFps, size, true);
@@ -120,7 +134,7 @@ void VideoOpsWorker::runPreprocess()
         }
         const double t = idx / srcFps;
         while (t >= nextOutSec - 1e-9) {
-            writer.write(frame);
+            writer.write(frame(view));
             ++written;
             nextOutSec += 1.0 / kPreprocessFps;
         }
@@ -140,10 +154,9 @@ void VideoOpsWorker::runPreprocess()
 
 void VideoOpsWorker::runChunks()
 {
-    // Prefer the 20 fps preprocessed video when it exists.
-    QString source = m_matchDir + QStringLiteral("/preprocessed_20fps.mp4");
-    if (!QFile::exists(source))
-        source = m_sourcePath;
+    // Prefer the 20 fps preprocessed video (already cropped) when it exists.
+    const bool usePreprocessed = QFile::exists(m_preprocessedPath);
+    const QString source = usePreprocessed ? m_preprocessedPath : m_sourcePath;
 
     cv::VideoCapture cap;
     if (!cap.open(source.toStdString())) {
@@ -153,10 +166,20 @@ void VideoOpsWorker::runChunks()
     double srcFps = cap.get(cv::CAP_PROP_FPS);
     if (srcFps <= 0.0 || srcFps > 240.0) srcFps = 30.0;
     const int total = std::max(1, static_cast<int>(cap.get(cv::CAP_PROP_FRAME_COUNT)));
-    const cv::Size size(static_cast<int>(cap.get(cv::CAP_PROP_FRAME_WIDTH)),
-                        static_cast<int>(cap.get(cv::CAP_PROP_FRAME_HEIGHT)));
+    const cv::Size srcSize(static_cast<int>(cap.get(cv::CAP_PROP_FRAME_WIDTH)),
+                           static_cast<int>(cap.get(cv::CAP_PROP_FRAME_HEIGHT)));
 
-    const QString chunksDir = m_matchDir + QStringLiteral("/video_chunks");
+    // When chunking straight from the original, the view crop still applies.
+    cv::Rect view(0, 0, srcSize.width, srcSize.height);
+    if (!usePreprocessed && m_crop.isValid() && !m_crop.isEmpty()) {
+        view = cv::Rect(m_crop.x(), m_crop.y(), m_crop.width(), m_crop.height())
+               & cv::Rect(0, 0, srcSize.width, srcSize.height);
+        if (view.area() <= 0)
+            view = cv::Rect(0, 0, srcSize.width, srcSize.height);
+    }
+    const cv::Size size(view.width, view.height);
+
+    const QString chunksDir = m_chunksDir;
     QDir().mkpath(chunksDir);
     // Remove stale chunks from a previous run.
     QDir dir(chunksDir);
@@ -209,7 +232,7 @@ void VideoOpsWorker::runChunks()
                     return;
                 }
             }
-            writer.write(frame);
+            writer.write(frame(view));
             ++writtenInChunk;
             nextOutSec += 1.0 / kChunkFps;
         }
@@ -236,7 +259,7 @@ void VideoOpsWorker::runChunks()
 
 void VideoOpsWorker::runTrack()
 {
-    const QString chunksDir = m_matchDir + QStringLiteral("/video_chunks");
+    const QString chunksDir = m_chunksDir;
     const QStringList chunks = QDir(chunksDir).entryList(
         {QStringLiteral("video_part_*.mp4")}, QDir::Files, QDir::Name);
     if (chunks.isEmpty()) {

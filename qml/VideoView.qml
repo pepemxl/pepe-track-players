@@ -10,6 +10,20 @@ Item {
 
     property bool showDetections: true
 
+    // View-crop selection: 0 = off, 1 = awaiting top-left corner,
+    // 2 = awaiting bottom-right corner.
+    property int cropStep: 0
+    property point cropTL: Qt.point(0, 0)
+
+    // A freshly added video asks for its view corners right away.
+    Connections {
+        target: App.match
+        function onMatchChanged() {
+            if (App.match.cropPending && App.videoLoaded)
+                view.cropStep = 1
+        }
+    }
+
     Row {
         anchors.fill: parent
 
@@ -17,6 +31,7 @@ Item {
         VideoOpsPanel {
             id: opsPanel
             height: parent.height
+            onCropRequested: view.cropStep = 1
         }
 
         // ---- left column: video + transport + quality strip ----
@@ -183,6 +198,18 @@ Item {
                             const vx = surface.toVideoX(mouse.x)
                             const vy = surface.toVideoY(mouse.y)
 
+                            // View-crop selection has priority over tagging.
+                            if (view.cropStep === 1 && mouse.button === Qt.LeftButton) {
+                                view.cropTL = Qt.point(vx, vy)
+                                view.cropStep = 2
+                                return
+                            }
+                            if (view.cropStep === 2 && mouse.button === Qt.LeftButton) {
+                                App.setVideoCrop(view.cropTL.x, view.cropTL.y, vx, vy)
+                                view.cropStep = 0
+                                return
+                            }
+
                             // Right click on a box: unassign it, or reveal
                             // its track id when it has no player yet.
                             if (mouse.button === Qt.RightButton) {
@@ -212,6 +239,91 @@ Item {
                             tagDropdown.x = Math.min(mouse.x, surface.width - tagDropdown.width - 8)
                             tagDropdown.y = Math.min(mouse.y, surface.height - tagDropdown.height - 8)
                             tagDropdown.open()
+                        }
+                    }
+
+                    // Selected camera view (crop) outline
+                    Rectangle {
+                        visible: App.videoLoaded && App.match.hasCrop
+                        x: surface.fromVideoX(App.match.crop.x)
+                        y: surface.fromVideoY(App.match.crop.y)
+                        width: App.match.crop.width * surface.videoScale
+                        height: App.match.crop.height * surface.videoScale
+                        color: "transparent"
+                        border.color: "#b3ffffff"
+                        border.width: 1
+                        Text {
+                            anchors.top: parent.top
+                            anchors.left: parent.left
+                            anchors.margins: 3
+                            text: "VIEW"
+                            color: "#b3ffffff"
+                            font { family: Theme.fontMono; pixelSize: 9; weight: Font.Bold }
+                        }
+                    }
+
+                    // Top-left marker while picking the second corner
+                    Rectangle {
+                        visible: view.cropStep === 2
+                        x: surface.fromVideoX(view.cropTL.x) - 5
+                        y: surface.fromVideoY(view.cropTL.y) - 5
+                        width: 10; height: 10; radius: 5
+                        color: Theme.orange
+                        border.color: "white"
+                        border.width: 1.5
+                        z: 3
+                    }
+
+                    // Crop-mode hint (bottom-left, like homography)
+                    Rectangle {
+                        visible: view.cropStep > 0
+                        z: 3
+                        anchors.bottom: parent.bottom
+                        anchors.left: parent.left
+                        anchors.margins: 12
+                        width: cropHintRow.implicitWidth + 22
+                        height: 28
+                        radius: 6
+                        color: "#e6ffb46b"
+                        Row {
+                            id: cropHintRow
+                            anchors.centerIn: parent
+                            spacing: 10
+                            Text {
+                                text: view.cropStep === 1
+                                    ? "View crop: click the TOP-LEFT corner"
+                                    : "View crop: click the BOTTOM-RIGHT corner"
+                                color: "#402508"
+                                font { family: Theme.fontUi; pixelSize: 12; weight: Font.DemiBold }
+                                anchors.verticalCenter: parent.verticalCenter
+                            }
+                            Text {
+                                text: "full frame"
+                                color: "#7a4a10"
+                                font { family: Theme.fontUi; pixelSize: 11; weight: Font.Bold }
+                                anchors.verticalCenter: parent.verticalCenter
+                                MouseArea {
+                                    anchors.fill: parent
+                                    anchors.margins: -5
+                                    cursorShape: Qt.PointingHandCursor
+                                    onClicked: {
+                                        App.clearVideoCrop()
+                                        view.cropStep = 0
+                                    }
+                                }
+                            }
+                            Text {
+                                text: "cancel"
+                                color: "#7a4a10"
+                                font { family: Theme.fontUi; pixelSize: 11; weight: Font.Bold }
+                                anchors.verticalCenter: parent.verticalCenter
+                                MouseArea {
+                                    anchors.fill: parent
+                                    anchors.margins: -5
+                                    cursorShape: Qt.PointingHandCursor
+                                    onClicked: view.cropStep = 0
+                                }
+                            }
                         }
                     }
 

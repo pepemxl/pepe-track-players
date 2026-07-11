@@ -43,15 +43,27 @@ QtObject {
     }
 
     // Frame-marker types used by the video ops panel and scrubber ticks.
+    // Every "*_start"/"*_end" pair (except commercials) delimits a play
+    // period: tracking only runs inside play periods.
     readonly property var markerTypes: [
-        { type: "match_start",      label: "Match start", tint: "#30d980" },
-        { type: "match_end",        label: "Match end",   tint: "#e35449" },
-        { type: "lineup_a",         label: "Lineup A",    tint: "#4757d8" },
-        { type: "lineup_b",         label: "Lineup B",    tint: "#dd7a41" },
-        { type: "bench_a",          label: "Bench A",     tint: "#6b77c9" },
-        { type: "bench_b",          label: "Bench B",     tint: "#c9976b" },
-        { type: "commercial_start", label: "Comm. start", tint: "#e0ac37" },
-        { type: "commercial_end",   label: "Comm. end",   tint: "#e0ac37" },
+        { type: "match_start",       label: "Match start",    tint: "#30d980" },
+        { type: "match_end",         label: "Match end",      tint: "#e35449" },
+        { type: "first_half_start",  label: "1T inicio",      tint: "#38c98a" },
+        { type: "first_half_end",    label: "1T fin",         tint: "#2a8f64" },
+        { type: "second_half_start", label: "2T inicio",      tint: "#38aec9" },
+        { type: "second_half_end",   label: "2T fin",         tint: "#2a7e8f" },
+        { type: "extra1_start",      label: "ET1 inicio",     tint: "#9a7ae0" },
+        { type: "extra1_end",        label: "ET1 fin",        tint: "#6f57a8" },
+        { type: "extra2_start",      label: "ET2 inicio",     tint: "#c97ae0" },
+        { type: "extra2_end",        label: "ET2 fin",        tint: "#8f57a8" },
+        { type: "penalties_start",   label: "Penales inicio", tint: "#e07aab" },
+        { type: "penalties_end",     label: "Penales fin",    tint: "#a85779" },
+        { type: "lineup_a",          label: "Lineup A",       tint: "#4757d8" },
+        { type: "lineup_b",          label: "Lineup B",       tint: "#dd7a41" },
+        { type: "bench_a",           label: "Bench A",        tint: "#6b77c9" },
+        { type: "bench_b",           label: "Bench B",        tint: "#c9976b" },
+        { type: "commercial_start",  label: "Comm. start",    tint: "#e0ac37" },
+        { type: "commercial_end",    label: "Comm. end",      tint: "#e0ac37" },
     ]
 
     function markerInfo(type) {
