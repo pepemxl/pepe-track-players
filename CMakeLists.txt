@@ -45,6 +45,8 @@ set(SOURCES
     src/ShotDetector.h
     src/MaskGenerator.cpp
     src/MaskGenerator.h
+    src/PlayerSamples.cpp
+    src/PlayerSamples.h
     src/TracksModel.cpp
     src/TracksModel.h
     src/TrackingManager.cpp
