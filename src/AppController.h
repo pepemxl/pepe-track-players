@@ -20,6 +20,7 @@ class TracksModel;
 class MatchManager;
 class HomographyWorker;
 class MaskGenerator;
+class PlayerSamples;
 
 // Facade the QML layer talks to. Owns the video worker, the models and
 // the managers; forwards frames into the image provider.
@@ -75,6 +76,7 @@ class AppController : public QObject
     Q_PROPERTY(QObject *tracking READ trackingObj CONSTANT)
     Q_PROPERTY(QObject *tracksModel READ tracksModelObj CONSTANT)
     Q_PROPERTY(QObject *match READ matchObj CONSTANT)
+    Q_PROPERTY(QObject *playerSamples READ playerSamplesObj CONSTANT)
 
     // Secondary player (camera-sync section): a second project video
     // playing side by side with the main one.
@@ -136,6 +138,7 @@ public:
     QObject *trackingObj() const;
     QObject *tracksModelObj() const;
     QObject *matchObj() const;
+    QObject *playerSamplesObj() const;
 
     Q_INVOKABLE void openVideo(const QUrl &url);
     Q_INVOKABLE void openVideoFile(const QString &path);
@@ -178,6 +181,12 @@ public:
     // Deletes the current project (artifacts + games.json entry) and returns
     // the app to the empty "open a video" state.
     Q_INVOKABLE void deleteProject();
+
+    // Captures a reference appearance sample for a role (PlayerSamples::Role):
+    // crops the current frame at the given video-pixel box, saves a thumbnail
+    // and records it for the current video.
+    Q_INVOKABLE void capturePlayerSample(int role, double vx, double vy,
+                                         double vw, double vh);
 
     // Phase F2: run the inter-frame optical-flow propagation over the manual
     // keyframes and load the resulting dense per-frame homography track.
@@ -302,6 +311,7 @@ private:
     TrackingManager   *m_tracking{nullptr};
     TracksModel       *m_tracksModel{nullptr};
     MatchManager      *m_match{nullptr};
+    PlayerSamples     *m_playerSamples{nullptr};
     HomographyWorker  *m_homoWorker{nullptr};
     ShotDetector      *m_shotWorker{nullptr};
     MaskGenerator     *m_maskWorker{nullptr};

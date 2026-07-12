@@ -194,5 +194,33 @@ Rectangle {
                 }
             }
         }
+
+        NavItem {
+            id: playerNav
+            label: "Players"
+            active: nav.activeTab === 7
+            onClicked: nav.tabSelected(7)
+            iconItem: Canvas {
+                anchors.fill: parent
+                property color c: playerNav.iconColor
+                onCChanged: requestPaint()
+                onPaint: {
+                    const ctx = getContext("2d")
+                    ctx.reset()
+                    ctx.strokeStyle = c
+                    ctx.lineWidth = 1.6
+                    // person: head + shoulders inside a sampling box
+                    ctx.beginPath()
+                    ctx.arc(10, 6, 3, 0, 2 * Math.PI)
+                    ctx.stroke()
+                    ctx.beginPath()
+                    ctx.moveTo(5, 15); ctx.quadraticCurveTo(10, 10, 15, 15)
+                    ctx.stroke()
+                    ctx.setLineDash([2, 2])
+                    ctx.strokeRect(2, 2, 16, 16)
+                    ctx.setLineDash([])
+                }
+            }
+        }
     }
 }

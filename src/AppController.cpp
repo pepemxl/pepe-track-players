@@ -13,9 +13,11 @@
 #include "TracksModel.h"
 #include "TrackingManager.h"
 #include "MatchManager.h"
+#include "PlayerSamples.h"
 #include "VideoEngine.h"
 
 #include <QColor>
+#include <QDateTime>
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
@@ -110,6 +112,7 @@ AppController::AppController(QObject *parent)
     m_tracking      = new TrackingManager(this);
     m_tracksModel   = new TracksModel(this);
     m_match         = new MatchManager(this);
+    m_playerSamples = new PlayerSamples(this);
 
     // Seed rosters so the app is usable before any project exists.
     m_homeRoster->setPlayers({
@@ -220,6 +223,7 @@ QObject *AppController::homographyObj() const { return m_homography; }
 QObject *AppController::trackingObj() const   { return m_tracking; }
 QObject *AppController::tracksModelObj() const { return m_tracksModel; }
 QObject *AppController::matchObj() const      { return m_match; }
+QObject *AppController::playerSamplesObj() const { return m_playerSamples; }
 
 void AppController::openVideo(const QUrl &url)
 {
@@ -245,6 +249,7 @@ void AppController::openVideo(const QUrl &url)
     m_engine->start();
 
     m_tracking->setSource(path);
+    m_playerSamples->setBaseDir(projectDir());
     loadProjectIfPresent();
 
     emit playingChanged();
@@ -780,6 +785,8 @@ void AppController::deleteProject()
     m_undoStack.clear();
     m_redoStack.clear();
 
+    m_playerSamples->setBaseDir(QString());
+
     emit videoStateChanged();
     emit playingChanged();
     emit positionChanged();
@@ -787,6 +794,42 @@ void AppController::deleteProject()
     emit shotsChanged();
     emit pitchVisibleChanged();
     emit undoChanged();
+}
+
+void AppController::capturePlayerSample(int role, double vx, double vy,
+                                        double vw, double vh)
+{
+    if (!m_videoLoaded || m_lastFrame.isNull()) {
+        m_lastError = QStringLiteral("Abre un video antes de tomar muestras");
+        emit errorChanged();
+        return;
+    }
+    // Clamp the box to the frame.
+    QRect r = QRectF(vx, vy, vw, vh).toRect().normalized();
+    r &= QRect(0, 0, m_lastFrame.width(), m_lastFrame.height());
+    if (r.width() < 4 || r.height() < 4) {
+        m_lastError = QStringLiteral("La muestra es demasiado pequeña");
+        emit errorChanged();
+        return;
+    }
+    const QString dir = m_playerSamples->thumbDir();
+    if (dir.isEmpty()) {
+        m_lastError = QStringLiteral("El video no tiene carpeta de proyecto");
+        emit errorChanged();
+        return;
+    }
+    QDir().mkpath(dir);
+
+    const QString key = m_playerSamples->roleKey(role);
+    const QString fname = QStringLiteral("%1_%2.png")
+                              .arg(key).arg(QDateTime::currentMSecsSinceEpoch());
+    if (!m_lastFrame.copy(r).save(dir + QLatin1Char('/') + fname)) {
+        m_lastError = QStringLiteral("No se pudo guardar la muestra");
+        emit errorChanged();
+        return;
+    }
+    m_playerSamples->add(role, m_currentFrame, QRectF(r),
+                         QStringLiteral("player_samples/") + fname);
 }
 
 QString AppController::denseTrackPath() const
