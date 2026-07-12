@@ -109,6 +109,12 @@ public:
     Q_INVOKABLE void recompute();
     Q_INVOKABLE void removeKeyframe(int frame);
 
+    // Phase F3: store a line-refined homography (image->pitch) as a verified
+    // keyframe at `frame`. The 4 reference image points are recovered by
+    // mapping the fixed pitch reference points through H^-1, so it plugs into
+    // the same keyframe/interpolation model. errPx is the line-fit residual.
+    void applyRefinedHomography(int frame, const cv::Mat &H, double errPx);
+
     // H for a given frame (interpolated / clamped across keyframes).
     cv::Mat homographyAt(int frame) const;
     // Current-frame mapping (uses the working H kept in sync with currentFrame).

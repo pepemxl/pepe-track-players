@@ -152,6 +152,11 @@ public:
     Q_INVOKABLE void propagateHomography();
     Q_INVOKABLE void cancelPropagation();
 
+    // Phase F3: auto-calibrate the homography at the current frame by snapping
+    // the detected pitch lines to the field model, starting from the current
+    // (manual/interpolated) H, and store the result as a verified keyframe.
+    Q_INVOKABLE void autoCalibrateHomography();
+
 signals:
     void videoStateChanged();
     void playingChanged();
@@ -203,6 +208,7 @@ private:
     double  m_durationSec{0.0};
     double  m_fps{25.0};
     bool    m_playing{false};
+    QImage  m_lastFrame;          // most recent decoded frame (for line calibration)
     int     m_currentFrame{0};
     double  m_positionSec{0.0};
     int     m_frameSerial{0};

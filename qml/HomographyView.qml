@@ -855,6 +855,55 @@ Item {
                     }
                 }
 
+                // Auto-calibration by pitch lines (phase F3): snaps the current
+                // (manual/interpolated) H to the detected white lines and stores
+                // a refined keyframe at this frame.
+                Rectangle {
+                    width: parent.width
+                    height: 36
+                    radius: 8
+                    readonly property bool on: App.videoLoaded && App.homography.verified
+                    color: !on ? Theme.surfaceHi
+                         : (autoCalMouse.containsMouse ? "#6b4a12" : "#5c3f10")
+                    border.color: "#9c7a2e"
+                    border.width: 1
+                    Row {
+                        anchors.centerIn: parent
+                        spacing: 8
+                        Text {
+                            text: "▚"
+                            color: parent.parent.on ? "#ffcf7a" : Theme.textFaint
+                            font.pixelSize: 14
+                            anchors.verticalCenter: parent.verticalCenter
+                        }
+                        Text {
+                            text: "Auto-calibrate (lines)"
+                            color: parent.parent.on ? "#ffe6bd" : Theme.textFaint
+                            font { family: Theme.fontUi; pixelSize: 13; weight: Font.Bold }
+                            anchors.verticalCenter: parent.verticalCenter
+                        }
+                    }
+                    MouseArea {
+                        id: autoCalMouse
+                        anchors.fill: parent
+                        hoverEnabled: true
+                        enabled: parent.on
+                        cursorShape: enabled ? Qt.PointingHandCursor : Qt.ArrowCursor
+                        onClicked: App.autoCalibrateHomography()
+                    }
+                }
+
+                Text {
+                    width: parent.width
+                    wrapMode: Text.WordWrap
+                    text: "Refines this frame's H by fitting the detected pitch "
+                          + "lines. Place A–D roughly (or land on a keyframe) first "
+                          + "so it has a starting point."
+                    color: Theme.textFaint
+                    font { family: Theme.fontUi; pixelSize: 11 }
+                    lineHeight: 1.3
+                }
+
                 // ---- inter-frame propagation (phase F2, optical flow) ----
                 Column {
                     width: parent.width

@@ -424,6 +424,39 @@ cv::Mat HomographyManager::homographyAt(int frame) const
     return solveH(img);
 }
 
+void HomographyManager::applyRefinedHomography(int frame, const cv::Mat &H, double errPx)
+{
+    if (H.empty())
+        return;
+    // Recover the 4 reference image points: pitch -> image via H^-1.
+    const cv::Mat Hinv = H.inv();
+    std::vector<cv::Point2f> pit, imgPts;
+    pit.reserve(4);
+    for (int i = 0; i < 4; ++i)
+        pit.emplace_back(static_cast<float>(m_points[i].pitch.x()),
+                         static_cast<float>(m_points[i].pitch.y()));
+    cv::perspectiveTransform(pit, imgPts, Hinv);
+
+    QPointF img[4];
+    for (int i = 0; i < 4; ++i)
+        img[i] = QPointF(imgPts[i].x, imgPts[i].y);
+
+    upsertKeyframe(frame, img, true, errPx);
+    m_touched = true;
+    if (!m_dense.isEmpty()) {   // dense propagation is now stale
+        m_dense.clear();
+        m_denseStart = 0;
+        emit propagationChanged();
+    }
+    if (frame == m_currentFrame) {
+        refreshForCurrentFrame();   // emits pointsChanged + stateChanged
+    } else {
+        emit stateChanged();
+    }
+    emit keyframesChanged();
+    emit edited();
+}
+
 bool HomographyManager::atPropagated() const
 {
     return !m_dense.isEmpty() && m_currentFrame >= m_denseStart

@@ -3,6 +3,7 @@
 #include "FrameProvider.h"
 #include "HomographyManager.h"
 #include "HomographyWorker.h"
+#include "LineCalibrator.h"
 #include "MatchMetadata.h"
 #include "RosterModel.h"
 #include "TagsModel.h"
@@ -537,6 +538,7 @@ void AppController::redo()
 void AppController::onFrameReady(const QImage &frame, int frameIndex, double posSec)
 {
     m_frameProvider->setImage(frame);
+    m_lastFrame = frame;
     ++m_frameSerial;
     m_currentFrame = frameIndex;
     m_positionSec = posSec;
@@ -756,6 +758,50 @@ void AppController::cancelPropagation()
 {
     if (m_homoWorker && m_homoWorker->isRunning())
         m_homoWorker->requestStop();
+}
+
+void AppController::autoCalibrateHomography()
+{
+    if (!m_videoLoaded || m_lastFrame.isNull()) {
+        m_lastError = QStringLiteral("Abre un video antes de auto-calibrar");
+        emit errorChanged();
+        return;
+    }
+    const cv::Mat Hinit = m_homography->homographyAt(m_currentFrame);
+    if (Hinit.empty()) {
+        m_lastError = QStringLiteral("Coloca los puntos A–D (o un keyframe) antes de auto-calibrar");
+        emit errorChanged();
+        return;
+    }
+
+    // QImage -> BGR cv::Mat (deep copy; the RGB view aliases QImage memory).
+    const QImage rgb = m_lastFrame.convertToFormat(QImage::Format_RGB888);
+    const cv::Mat rgbView(rgb.height(), rgb.width(), CV_8UC3,
+                          const_cast<uchar *>(rgb.bits()),
+                          static_cast<size_t>(rgb.bytesPerLine()));
+    cv::Mat bgr;
+    cv::cvtColor(rgbView, bgr, cv::COLOR_RGB2BGR);
+
+    // Player boxes (video pixels) to mask out, if chunk detections are loaded.
+    std::vector<cv::Rect> boxes;
+    for (const QVariant &v : m_tracking->detectionsAt(m_positionSec)) {
+        const QVariantMap m = v.toMap();
+        boxes.emplace_back(m.value(QStringLiteral("x")).toInt(),
+                           m.value(QStringLiteral("y")).toInt(),
+                           m.value(QStringLiteral("w")).toInt(),
+                           m.value(QStringLiteral("h")).toInt());
+    }
+
+    const LineCalibrator::Result res = LineCalibrator::calibrate(bgr, boxes, Hinit);
+    if (!res.ok) {
+        m_lastError = QStringLiteral("Auto-calibración por líneas falló (%1 líneas, %2 inliers, %3px)")
+                          .arg(res.lineCount).arg(res.inliers)
+                          .arg(res.reprojErr, 0, 'f', 1);
+        emit errorChanged();
+        return;
+    }
+    m_homography->applyRefinedHomography(m_currentFrame, res.H, res.reprojErr);
+    markDirty();
 }
 
 void AppController::onPropagationFinished(bool ok, const QString &error,
