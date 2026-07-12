@@ -37,6 +37,8 @@ set(SOURCES
     src/HomographyManager.h
     src/HomographyWorker.cpp
     src/HomographyWorker.h
+    src/LineCalibrator.cpp
+    src/LineCalibrator.h
     src/TracksModel.cpp
     src/TracksModel.h
     src/TrackingManager.cpp
