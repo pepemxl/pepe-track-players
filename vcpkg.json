@@ -6,7 +6,7 @@
         {
             "name": "opencv4",
             "default-features": false,
-            "features": ["ffmpeg", "dnn"]
+            "features": ["ffmpeg", "dnn", "calib3d", "png", "jpeg"]
         }
     ]
 }

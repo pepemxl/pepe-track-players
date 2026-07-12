@@ -505,10 +505,20 @@ Item {
 
                         FeatureButton {
                             width: parent.width
-                            label: "Preview current frame"
+                            label: view.greenFollow ? "Following frame — stop"
+                                                    : "Preview (follows frame)"
                             accent: Theme.green
+                            filled: view.greenFollow
                             enabled: App.videoLoaded && !App.maskGenRunning
-                            onClicked: App.previewGreenMask()
+                            onClicked: {
+                                if (view.greenFollow) {
+                                    view.greenFollow = false
+                                    App.clearMaskPreview()
+                                } else {
+                                    view.greenFollow = true
+                                    App.previewGreenMask()
+                                }
+                            }
                         }
                         FeatureButton {
                             width: parent.width
@@ -610,7 +620,7 @@ Item {
                                 label: "Show"
                                 accent: Theme.red
                                 anchors.verticalCenter: parent.verticalCenter
-                                onClicked: App.showStaticMask(view.staticChunk)
+                                onClicked: { view.greenFollow = false; App.showStaticMask(view.staticChunk) }
                             }
                         }
 
@@ -658,7 +668,7 @@ Item {
                             label: "Show combined RANSAC mask"
                             accent: Theme.red
                             enabled: App.videoLoaded
-                            onClicked: App.showStaticUnion()
+                            onClicked: { view.greenFollow = false; App.showStaticUnion() }
                         }
                     }
 
@@ -720,7 +730,7 @@ Item {
                         width: parent.width
                         label: "Hide / clear overlay"
                         enabled: App.maskShown
-                        onClicked: App.clearMaskPreview()
+                        onClicked: { view.greenFollow = false; App.clearMaskPreview() }
                     }
                 }
             }
