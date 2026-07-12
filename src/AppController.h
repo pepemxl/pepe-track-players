@@ -7,6 +7,8 @@
 #include <QVariantMap>
 #include <QVector>
 
+#include "ShotDetector.h"
+
 class VideoEngine;
 class FrameProvider;
 class RosterModel;
@@ -39,6 +41,15 @@ class AppController : public QObject
     Q_PROPERTY(QString lastError READ lastError NOTIFY errorChanged)
     Q_PROPERTY(bool canUndo READ canUndo NOTIFY undoChanged)
     Q_PROPERTY(bool canRedo READ canRedo NOTIFY undoChanged)
+
+    // Shot segmentation (phase F4). pitchVisible is false on frames that fall
+    // in a non-pitch shot (close-up / graphic / crowd), where H is invalid.
+    Q_PROPERTY(bool hasShots READ hasShots NOTIFY shotsChanged)
+    Q_PROPERTY(int shotCount READ shotCount NOTIFY shotsChanged)
+    Q_PROPERTY(bool pitchVisible READ pitchVisible NOTIFY pitchVisibleChanged)
+    Q_PROPERTY(bool shotDetecting READ shotDetecting NOTIFY shotStateChanged)
+    Q_PROPERTY(double shotProgress READ shotProgress NOTIFY shotStateChanged)
+    Q_PROPERTY(QString shotLabel READ shotLabel NOTIFY shotStateChanged)
 
     Q_PROPERTY(QObject *metadata READ metadataObj CONSTANT)
     Q_PROPERTY(QObject *homeRoster READ homeRosterObj CONSTANT)
@@ -157,6 +168,18 @@ public:
     // (manual/interpolated) H, and store the result as a verified keyframe.
     Q_INVOKABLE void autoCalibrateHomography();
 
+    // Phase F4 shot segmentation.
+    bool hasShots() const { return !m_shots.isEmpty(); }
+    int shotCount() const { return m_shots.size(); }
+    bool pitchVisible() const { return m_pitchVisible; }
+    bool shotDetecting() const { return m_shotDetecting; }
+    double shotProgress() const { return m_shotProgress; }
+    QString shotLabel() const { return m_shotLabel; }
+    Q_INVOKABLE void detectShots();
+    Q_INVOKABLE void cancelShotDetection();
+    // Shots for the timeline: [{start,end,pitch,grass}] in frames.
+    Q_INVOKABLE QVariantList shots() const;
+
 signals:
     void videoStateChanged();
     void playingChanged();
@@ -170,6 +193,9 @@ signals:
     void secPositionChanged();
     void secFrameSerialChanged();
     void errorChanged();
+    void shotsChanged();
+    void shotStateChanged();
+    void pitchVisibleChanged();
 
 private:
     void onFrameReady(const QImage &frame, int frameIndex, double posSec);
@@ -185,6 +211,12 @@ private:
     void onPropagationFinished(bool ok, const QString &error, int startFrame, int count);
     QString denseTrackPath() const;
 
+    void onShotDetectFinished(bool ok, const QString &error, int shotCount);
+    QString shotsPath() const;
+    void loadShotsIfPresent();
+    bool pitchVisibleAt(int frame) const;
+    void updatePitchVisible();
+
     VideoEngine       *m_engine{nullptr};
     FrameProvider     *m_frameProvider{nullptr};   // owned by the QML engine
     VideoEngine       *m_engine2{nullptr};
@@ -198,6 +230,7 @@ private:
     TracksModel       *m_tracksModel{nullptr};
     MatchManager      *m_match{nullptr};
     HomographyWorker  *m_homoWorker{nullptr};
+    ShotDetector      *m_shotWorker{nullptr};
 
     bool    m_videoLoaded{false};
     QString m_videoPath;
@@ -218,6 +251,12 @@ private:
 
     QVector<QVariantMap> m_undoStack;
     QVector<QVariantMap> m_redoStack;
+
+    QVector<ShotDetector::Shot> m_shots;   // sorted by startFrame
+    bool    m_pitchVisible{true};
+    bool    m_shotDetecting{false};
+    double  m_shotProgress{0.0};
+    QString m_shotLabel;
 
     bool    m_secLoaded{false};
     QString m_secVideoName;

@@ -162,6 +162,26 @@ Item {
                         }
                     }
 
+                    // NO-PITCH badge (phase F4): current frame is a non-pitch
+                    // shot, so the homography is invalid here.
+                    Rectangle {
+                        visible: App.hasShots && !App.pitchVisible
+                        anchors.top: parent.top
+                        anchors.horizontalCenter: parent.horizontalCenter
+                        anchors.margins: 12
+                        width: noPitchText.implicitWidth + 22; height: 24; radius: 6
+                        color: "#d9532016"
+                        border.color: "#c0503b"
+                        border.width: 1
+                        Text {
+                            id: noPitchText
+                            anchors.centerIn: parent
+                            text: "⊘ NO PITCH · H invalid"
+                            color: "#ffb59e"
+                            font { family: Theme.fontMono; pixelSize: 11; weight: Font.DemiBold }
+                        }
+                    }
+
                     // Placement hint (bottom-left)
                     Rectangle {
                         visible: view.selectedPointId !== ""
@@ -232,6 +252,22 @@ Item {
                                 height: parent.height
                                 radius: 3
                                 color: Theme.green
+                            }
+                            // Shot segments (phase F4): pitch = green tint,
+                            // non-pitch (close-up/graphic) = red tint.
+                            Repeater {
+                                model: App.hasShots ? App.shots() : []
+                                delegate: Rectangle {
+                                    required property var modelData
+                                    x: App.totalFrames > 1
+                                        ? homoTrack.width * modelData.start / (App.totalFrames - 1) : 0
+                                    width: Math.max(1, App.totalFrames > 1
+                                        ? homoTrack.width * (modelData.end - modelData.start) / (App.totalFrames - 1) : 0)
+                                    y: 8
+                                    height: 4
+                                    color: modelData.pitch ? "#3bd07a" : "#d0503b"
+                                    opacity: 0.9
+                                }
                             }
                             // Propagated (dense flow) range: keyframe span.
                             Rectangle {
@@ -1016,6 +1052,111 @@ Item {
                                 cursorShape: Qt.PointingHandCursor
                                 onClicked: App.homography.clearPropagation()
                             }
+                        }
+                    }
+                }
+
+                // ---- shot segmentation (phase F4, feed_tv) ----
+                Column {
+                    width: parent.width
+                    spacing: 8
+
+                    Item {
+                        width: parent.width
+                        height: 16
+                        Text {
+                            anchors.left: parent.left
+                            text: "SHOTS · CUTS"
+                            color: Theme.textDim
+                            font { family: Theme.fontUi; pixelSize: 11; weight: Font.Bold; letterSpacing: 0.5 }
+                        }
+                        Text {
+                            anchors.right: parent.right
+                            text: App.hasShots ? App.shotCount + " shots"
+                                : App.shotDetecting ? "detecting…" : "none"
+                            color: App.hasShots ? "#8fbfa6" : Theme.textFaint
+                            font { family: Theme.fontUi; pixelSize: 11 }
+                        }
+                    }
+
+                    Text {
+                        width: parent.width
+                        wrapMode: Text.WordWrap
+                        text: "Detects camera cuts and flags non-pitch shots "
+                              + "(close-ups / graphics). Tags on non-pitch frames "
+                              + "get no pitch coordinates."
+                        color: Theme.textFaint
+                        font { family: Theme.fontUi; pixelSize: 11 }
+                        lineHeight: 1.3
+                    }
+
+                    // Current-frame shot status.
+                    Rectangle {
+                        visible: App.hasShots
+                        width: parent.width
+                        height: 26
+                        radius: 6
+                        color: App.pitchVisible ? "#16321f" : "#331a16"
+                        border.color: App.pitchVisible ? "#2f6b45" : "#7a3128"
+                        border.width: 1
+                        Text {
+                            anchors.centerIn: parent
+                            text: App.pitchVisible ? "◉ pitch visible · H valid here"
+                                                   : "⊘ non-pitch shot · H invalid here"
+                            color: App.pitchVisible ? "#9fe0b8" : "#ffb59e"
+                            font { family: Theme.fontMono; pixelSize: 10 }
+                        }
+                    }
+
+                    // Progress bar (visible while detecting).
+                    Rectangle {
+                        visible: App.shotDetecting
+                        width: parent.width
+                        height: 26
+                        radius: 6
+                        color: Theme.surfaceHi
+                        border.color: Theme.border2
+                        border.width: 1
+                        Rectangle {
+                            anchors.left: parent.left
+                            anchors.verticalCenter: parent.verticalCenter
+                            anchors.leftMargin: 2
+                            width: (parent.width - 4) * App.shotProgress
+                            height: parent.height - 4
+                            radius: 5
+                            color: "#2f6b45"
+                        }
+                        Text {
+                            anchors.centerIn: parent
+                            text: App.shotLabel + "  ·  " + Math.round(App.shotProgress * 100) + "%"
+                            color: "#d7f0e0"
+                            font { family: Theme.fontMono; pixelSize: 10 }
+                        }
+                    }
+
+                    Rectangle {
+                        width: parent.width
+                        height: 36
+                        radius: 8
+                        readonly property bool on: App.videoLoaded && !App.shotDetecting
+                        color: !on ? Theme.surfaceHi
+                             : (shotMouse.containsMouse ? "#2f6b45" : "#295c3c")
+                        border.color: "#3d7d54"
+                        border.width: 1
+                        Text {
+                            text: App.shotDetecting ? "Detecting shots…"
+                                : App.hasShots ? "Re-detect shots" : "Detect shots"
+                            color: parent.on ? "#e6fff0" : Theme.textFaint
+                            font { family: Theme.fontUi; pixelSize: 13; weight: Font.Bold }
+                            anchors.centerIn: parent
+                        }
+                        MouseArea {
+                            id: shotMouse
+                            anchors.fill: parent
+                            hoverEnabled: true
+                            enabled: parent.on
+                            cursorShape: enabled ? Qt.PointingHandCursor : Qt.ArrowCursor
+                            onClicked: App.detectShots()
                         }
                     }
                 }

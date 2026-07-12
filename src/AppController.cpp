@@ -4,6 +4,7 @@
 #include "HomographyManager.h"
 #include "HomographyWorker.h"
 #include "LineCalibrator.h"
+#include "ShotDetector.h"
 #include "MatchMetadata.h"
 #include "RosterModel.h"
 #include "TagsModel.h"
@@ -405,7 +406,9 @@ void AppController::addTag(double vx, double vy, int team, int rosterRow)
     tag.team         = team;
     tag.x            = vx;
     tag.y            = vy;
-    if (m_homography->verified()) {
+    // Only map to pitch coordinates when the frame actually shows the pitch
+    // (a non-pitch shot has no valid homography — phase F4).
+    if (m_homography->verified() && m_pitchVisible) {
         const QPointF p = m_homography->imageToPitch(vx, vy);
         tag.pitchX = p.x();
         tag.pitchY = p.y();
@@ -546,6 +549,7 @@ void AppController::onFrameReady(const QImage &frame, int frameIndex, double pos
     // with the displayed frame so the pitch overlay and tagging follow the
     // moving camera between calibration keyframes.
     m_homography->setCurrentFrame(frameIndex);
+    updatePitchVisible();
     emit frameSerialChanged();
     emit positionChanged();
 }
@@ -633,6 +637,7 @@ void AppController::loadProjectIfPresent()
     const QString dense = denseTrackPath();
     if (!dense.isEmpty() && QFile::exists(dense))
         m_homography->loadDenseTrack(dense);
+    loadShotsIfPresent();
     m_dirty = false;
     emit dirtyChanged();
 }
@@ -801,6 +806,119 @@ void AppController::autoCalibrateHomography()
         return;
     }
     m_homography->applyRefinedHomography(m_currentFrame, res.H, res.reprojErr);
+    markDirty();
+}
+
+// ---- phase F4: shot segmentation ------------------------------------------
+
+QString AppController::shotsPath() const
+{
+    const QString dir = projectDir();
+    if (dir.isEmpty())
+        return {};
+    return QDir(dir).filePath(QStringLiteral("shots.json"));
+}
+
+void AppController::loadShotsIfPresent()
+{
+    m_shots.clear();
+    const QString path = shotsPath();
+    if (!path.isEmpty() && QFile::exists(path))
+        m_shots = ShotDetector::load(path);
+    emit shotsChanged();
+    updatePitchVisible();
+}
+
+bool AppController::pitchVisibleAt(int frame) const
+{
+    if (m_shots.isEmpty())
+        return true;   // unknown -> don't block
+    for (const ShotDetector::Shot &s : m_shots)
+        if (frame >= s.startFrame && frame <= s.endFrame)
+            return s.pitch;
+    return true;        // outside analyzed range -> assume visible
+}
+
+void AppController::updatePitchVisible()
+{
+    const bool v = pitchVisibleAt(m_currentFrame);
+    if (v != m_pitchVisible) {
+        m_pitchVisible = v;
+        emit pitchVisibleChanged();
+    }
+}
+
+QVariantList AppController::shots() const
+{
+    QVariantList list;
+    for (const ShotDetector::Shot &s : m_shots) {
+        QVariantMap m;
+        m[QStringLiteral("start")] = s.startFrame;
+        m[QStringLiteral("end")] = s.endFrame;
+        m[QStringLiteral("pitch")] = s.pitch;
+        m[QStringLiteral("grass")] = s.grassMean;
+        list.append(m);
+    }
+    return list;
+}
+
+void AppController::detectShots()
+{
+    if (!m_videoLoaded || m_videoPath.isEmpty()) {
+        m_lastError = QStringLiteral("Abre un video antes de detectar tomas");
+        emit errorChanged();
+        return;
+    }
+    if (m_shotWorker && m_shotWorker->isRunning())
+        return;
+
+    // Restrict to the match window when the markers define one.
+    int start = 0, end = 0;
+    if (m_match->matchStartFrame() > 0 || m_match->matchEndFrame() > 0) {
+        start = m_match->matchStartFrame();
+        end = m_match->matchEndFrame();
+    }
+
+    QDir().mkpath(projectDir());
+    if (!m_shotWorker) {
+        m_shotWorker = new ShotDetector(this);
+        connect(m_shotWorker, &ShotDetector::progressChanged, this,
+                [this](double frac, const QString &label) {
+                    m_shotProgress = frac;
+                    m_shotLabel = label;
+                    emit shotStateChanged();
+                });
+        connect(m_shotWorker, &ShotDetector::finished, this,
+                &AppController::onShotDetectFinished);
+    }
+    m_shotDetecting = true;
+    m_shotProgress = 0.0;
+    m_shotLabel = QStringLiteral("Iniciando…");
+    emit shotStateChanged();
+    m_shotWorker->configure(m_videoPath, start, end, shotsPath());
+    m_shotWorker->start();
+}
+
+void AppController::cancelShotDetection()
+{
+    if (m_shotWorker && m_shotWorker->isRunning())
+        m_shotWorker->requestStop();
+}
+
+void AppController::onShotDetectFinished(bool ok, const QString &error, int shotCount)
+{
+    Q_UNUSED(shotCount);
+    m_shotDetecting = false;
+    m_shotLabel = ok ? QStringLiteral("Tomas detectadas") : error;
+    emit shotStateChanged();
+    if (!ok) {
+        if (!error.isEmpty() && error != QStringLiteral("Cancelado")) {
+            m_lastError = error;
+            emit errorChanged();
+        }
+        return;
+    }
+    loadShotsIfPresent();
     markDirty();
 }
 

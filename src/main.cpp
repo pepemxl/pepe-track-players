@@ -3,6 +3,7 @@
 #include "HomographyManager.h"
 #include "HomographyWorker.h"
 #include "LineCalibrator.h"
+#include "ShotDetector.h"
 #include "MatchManager.h"
 #include "TrackingManager.h"
 
@@ -476,6 +477,39 @@ static int runCalibrateSelftest()
     return res.ok && cornerErr(res.H) < 10.0 ? 0 : 1;
 }
 
+// Headless: shot segmentation over a frame range ("pepe --detect-shots <video>
+// <startFrame> <count>"), printing the shots and writing shots.json.
+static int runDetectShots(const QString &videoPath, int startFrame, int count)
+{
+    const int endFrame = count > 0 ? startFrame + count : 0;
+    const QVector<ShotDetector::Shot> shots = ShotDetector::detectSync(
+        videoPath, startFrame, endFrame,
+        [](double f, const QString &l) {
+            static int last = -1;
+            const int pct = static_cast<int>(f * 100);
+            if (pct / 20 != last) { last = pct / 20;
+                std::fprintf(stdout, "%3d%%  %s\n", pct, qPrintable(l)); std::fflush(stdout); }
+        },
+        nullptr);
+    if (shots.isEmpty()) { std::fprintf(stderr, "error: no shots\n"); return 1; }
+
+    const QFileInfo info(videoPath);
+    const QString dir = info.dir().filePath(info.completeBaseName() + QStringLiteral("_project"));
+    QDir().mkpath(dir);
+    ShotDetector::save(QDir(dir).filePath(QStringLiteral("shots.json")), shots);
+
+    int pitchCount = 0;
+    for (const auto &s : shots) if (s.pitch) ++pitchCount;
+    std::fprintf(stdout, "%d shots (%d pitch, %d non-pitch):\n",
+                 shots.size(), pitchCount, shots.size() - pitchCount);
+    for (const auto &s : shots)
+        std::fprintf(stdout, "  [%6d..%6d] %5d f  %-9s  grass=%.2f  cut=%.2f\n",
+                     s.startFrame, s.endFrame, s.endFrame - s.startFrame + 1,
+                     s.pitch ? "PITCH" : "non-pitch", s.grassMean, s.cutStrength);
+    std::fflush(stdout);
+    return 0;
+}
+
 int main(int argc, char *argv[])
 {
     QGuiApplication app(argc, argv);
@@ -508,6 +542,8 @@ int main(int argc, char *argv[])
             return runCalibrateLines(args);
         if (args.size() >= 2 && args.at(1) == QLatin1String("--calibrate-selftest"))
             return runCalibrateSelftest();
+        if (args.size() >= 5 && args.at(1) == QLatin1String("--detect-shots"))
+            return runDetectShots(args.at(2), args.at(3).toInt(), args.at(4).toInt());
     }
 
     // Basic style so QML can fully restyle the controls.
