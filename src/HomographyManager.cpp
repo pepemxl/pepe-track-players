@@ -1,4 +1,5 @@
 #include "HomographyManager.h"
+#include "HomographySolver.h"
 
 #include <QJsonArray>
 #include <QVariantMap>
@@ -243,30 +244,11 @@ cv::Mat HomographyManager::solveH(const QPointF img[4], double *reprojErrPx) con
                         static_cast<float>(m_points[i].pitch.y()));
     }
 
-    // 4-point DLT solved directly (no calib3d/cv::findHomography; with
-    // exactly 4 correspondences the linear system is square).
-    cv::Mat A = cv::Mat::zeros(8, 8, CV_64F);
-    cv::Mat b(8, 1, CV_64F);
-    for (int i = 0; i < 4; ++i) {
-        const double x = ip[i].x, y = ip[i].y;
-        const double u = pp[i].x, v = pp[i].y;
-        double *r0 = A.ptr<double>(2 * i);
-        r0[0] = x; r0[1] = y; r0[2] = 1.0;
-        r0[6] = -u * x; r0[7] = -u * y;
-        double *r1 = A.ptr<double>(2 * i + 1);
-        r1[3] = x; r1[4] = y; r1[5] = 1.0;
-        r1[6] = -v * x; r1[7] = -v * y;
-        b.at<double>(2 * i)     = u;
-        b.at<double>(2 * i + 1) = v;
-    }
-    cv::Mat h;
-    if (!cv::solve(A, b, h, cv::DECOMP_LU) || cv::countNonZero(h != h) > 0)
+    // Exact 4-point homography (image -> pitch) via the configurable solver
+    // module (OpenCV cv::findHomography or the custom DLT).
+    cv::Mat H = homog::solveDLT(ip, pp);
+    if (H.empty() || cv::countNonZero(H != H) > 0)
         return cv::Mat();
-
-    cv::Mat H = (cv::Mat_<double>(3, 3) <<
-                     h.at<double>(0), h.at<double>(1), h.at<double>(2),
-                     h.at<double>(3), h.at<double>(4), h.at<double>(5),
-                     h.at<double>(6), h.at<double>(7), 1.0);
 
     if (reprojErrPx) {
         cv::Mat Hinv = H.inv();
@@ -384,6 +366,7 @@ void HomographyManager::recompute()
     // The dense propagation is now stale relative to the edited keyframes.
     if (!m_dense.isEmpty()) {
         m_dense.clear();
+        m_denseConf.clear();
         m_denseStart = 0;
         emit propagationChanged();
     }
@@ -399,6 +382,7 @@ void HomographyManager::removeKeyframe(int frame)
             m_keyframes.removeAt(i);
             if (!m_dense.isEmpty()) {
                 m_dense.clear();
+                m_denseConf.clear();
                 m_denseStart = 0;
                 emit propagationChanged();
             }
@@ -445,6 +429,7 @@ void HomographyManager::applyRefinedHomography(int frame, const cv::Mat &H, doub
     m_touched = true;
     if (!m_dense.isEmpty()) {   // dense propagation is now stale
         m_dense.clear();
+        m_denseConf.clear();
         m_denseStart = 0;
         emit propagationChanged();
     }
@@ -461,6 +446,14 @@ bool HomographyManager::atPropagated() const
 {
     return !m_dense.isEmpty() && m_currentFrame >= m_denseStart
         && m_currentFrame < m_denseStart + m_dense.size();
+}
+
+double HomographyManager::confidenceAt(int frame) const
+{
+    const int idx = frame - m_denseStart;
+    if (m_denseConf.isEmpty() || idx < 0 || idx >= m_denseConf.size())
+        return 1.0;   // no dense confidence -> treat as valid
+    return m_denseConf[idx];
 }
 
 void HomographyManager::setPropagating(bool on, const QString &label)
@@ -486,6 +479,7 @@ void HomographyManager::applyDenseTrack(int start,
 {
     m_denseStart = start;
     m_dense = dense;
+    m_denseConf.clear();   // legacy caller path: no per-frame confidence
     emit propagationChanged();
     if (!m_keyframes.isEmpty())
         refreshForCurrentFrame();
@@ -501,12 +495,22 @@ bool HomographyManager::loadDenseTrack(const QString &path)
     QDataStream ds(&f);
     ds.setByteOrder(QDataStream::LittleEndian);
     ds.setFloatingPointPrecision(QDataStream::DoublePrecision);
-    qint32 start = 0, count = 0;
-    ds >> start >> count;
+    // v2 files begin with the sentinel -2 and carry a per-frame confidence;
+    // v1 files begin directly with the start frame (>= 0).
+    qint32 first = 0;
+    ds >> first;
+    const bool v2 = (first == -2);
+    qint32 start = first, count = 0;
+    if (v2)
+        ds >> start;
+    ds >> count;
     if (count <= 0 || count > 10000000)
         return false;
     QVector<std::array<QPointF, 4>> dense;
+    QVector<double> confs;
     dense.reserve(count);
+    if (v2)
+        confs.reserve(count);
     for (int i = 0; i < count; ++i) {
         std::array<QPointF, 4> a;
         for (int k = 0; k < 4; ++k) {
@@ -514,12 +518,77 @@ bool HomographyManager::loadDenseTrack(const QString &path)
             ds >> x >> y;
             a[k] = QPointF(x, y);
         }
+        if (v2) {
+            double c = 1.0;
+            ds >> c;
+            confs.append(c);
+        }
         if (ds.status() != QDataStream::Ok)
             return false;
         dense.append(a);
     }
     applyDenseTrack(start, dense);
+    m_denseConf = confs;   // set after applyDenseTrack (which clears it)
+    emit stateChanged();
     return true;
+}
+
+QVariantList HomographyManager::graphicsVariant() const
+{
+    QVariantList list;
+    for (const QRectF &g : m_graphics) {
+        QVariantMap m;
+        m[QStringLiteral("x")] = g.x();
+        m[QStringLiteral("y")] = g.y();
+        m[QStringLiteral("w")] = g.width();
+        m[QStringLiteral("h")] = g.height();
+        list.append(m);
+    }
+    return list;
+}
+
+void HomographyManager::addGraphicsRegion(double x, double y, double w, double h)
+{
+    // Normalize to a top-left rect clamped to [0,1]; ignore negligible drags.
+    if (w < 0) { x += w; w = -w; }
+    if (h < 0) { y += h; h = -h; }
+    x = std::max(0.0, std::min(1.0, x));
+    y = std::max(0.0, std::min(1.0, y));
+    w = std::min(w, 1.0 - x);
+    h = std::min(h, 1.0 - y);
+    if (w < 0.01 || h < 0.01)
+        return;
+    m_graphics.append(QRectF(x, y, w, h));
+    emit graphicsChanged();
+    emit edited();
+}
+
+void HomographyManager::setStaticVoteFrac(double f)
+{
+    f = std::max(0.05, std::min(1.0, f));
+    if (qFuzzyCompare(f, m_staticVoteFrac))
+        return;
+    m_staticVoteFrac = f;
+    emit staticVoteFracChanged();
+    emit edited();
+}
+
+void HomographyManager::removeGraphicsRegion(int index)
+{
+    if (index < 0 || index >= m_graphics.size())
+        return;
+    m_graphics.removeAt(index);
+    emit graphicsChanged();
+    emit edited();
+}
+
+void HomographyManager::clearGraphics()
+{
+    if (m_graphics.isEmpty())
+        return;
+    m_graphics.clear();
+    emit graphicsChanged();
+    emit edited();
 }
 
 void HomographyManager::clearPropagation()
@@ -527,6 +596,7 @@ void HomographyManager::clearPropagation()
     if (m_dense.isEmpty() && !m_propagating && m_propProgress == 0.0)
         return;
     m_dense.clear();
+    m_denseConf.clear();
     m_denseStart = 0;
     m_propagating = false;
     m_propProgress = 0.0;
@@ -590,11 +660,36 @@ QJsonObject HomographyManager::toJson() const
         kfs.append(kobj);
     }
     o[QStringLiteral("keyframes")] = kfs;
+
+    QJsonArray gfx;
+    for (const QRectF &g : m_graphics) {
+        QJsonObject gobj;
+        gobj[QStringLiteral("x")] = g.x();
+        gobj[QStringLiteral("y")] = g.y();
+        gobj[QStringLiteral("w")] = g.width();
+        gobj[QStringLiteral("h")] = g.height();
+        gfx.append(gobj);
+    }
+    o[QStringLiteral("graphics")] = gfx;
+    o[QStringLiteral("static_vote_frac")] = m_staticVoteFrac;
     return o;
 }
 
 void HomographyManager::fromJson(const QJsonObject &o)
 {
+    m_graphics.clear();
+    for (const QJsonValue &v : o[QStringLiteral("graphics")].toArray()) {
+        const QJsonObject g = v.toObject();
+        m_graphics.append(QRectF(g[QStringLiteral("x")].toDouble(), g[QStringLiteral("y")].toDouble(),
+                                 g[QStringLiteral("w")].toDouble(), g[QStringLiteral("h")].toDouble()));
+    }
+    emit graphicsChanged();
+
+    m_staticVoteFrac = o.contains(QStringLiteral("static_vote_frac"))
+        ? std::max(0.05, std::min(1.0, o[QStringLiteral("static_vote_frac")].toDouble()))
+        : 0.15;
+    emit staticVoteFracChanged();
+
     // Optional fixed pitch reference.
     const QJsonArray pitch = o[QStringLiteral("pitch")].toArray();
     if (pitch.size() == 4) {

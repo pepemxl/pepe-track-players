@@ -7,6 +7,7 @@
 #include <QPointF>
 #include <QJsonObject>
 #include <QVector>
+#include <QRectF>
 #include <array>
 
 // Image<->pitch calibration from the 4 corner correspondences A/B/C/D.
@@ -41,6 +42,16 @@ class HomographyManager : public QObject
     Q_PROPERTY(double propProgress READ propProgress NOTIFY propagationChanged)
     Q_PROPERTY(QString propLabel READ propLabel NOTIFY propagationChanged)
     Q_PROPERTY(bool atPropagated READ atPropagated NOTIFY stateChanged)
+    // Per-frame confidence of the propagated homography (phase F5): 0..1, or
+    // 1 when there is no dense track. Low values flag jittery / post-cut frames.
+    Q_PROPERTY(double currentConfidence READ currentConfidence NOTIFY stateChanged)
+    // Static on-screen graphics regions (scoreboard/logos) masked out during
+    // propagation, in normalized [0,1] coordinates (phase F5).
+    Q_PROPERTY(QVariantList graphics READ graphicsVariant NOTIFY graphicsChanged)
+    Q_PROPERTY(int graphicsCount READ graphicsCount NOTIFY graphicsChanged)
+    // Majority-vote fraction for combining the auto per-chunk static masks into
+    // the screen-space RANSAC-exclusion mask (Features tab). Persisted.
+    Q_PROPERTY(double staticVoteFrac READ staticVoteFrac WRITE setStaticVoteFrac NOTIFY staticVoteFracChanged)
 
 public:
     struct Correspondence
@@ -77,9 +88,22 @@ public:
     double propProgress() const { return m_propProgress; }
     QString propLabel() const { return m_propLabel; }
     bool atPropagated() const;
+    double currentConfidence() const { return confidenceAt(m_currentFrame); }
+    Q_INVOKABLE double confidenceAt(int frame) const;
 
     // Read-only access to the keyframes for the propagation worker.
     const QVector<Keyframe> &keyframeData() const { return m_keyframes; }
+
+    // Graphics regions (normalized rects).
+    QVariantList graphicsVariant() const;
+    int graphicsCount() const { return m_graphics.size(); }
+    const QVector<QRectF> &graphicsRects() const { return m_graphics; }
+    Q_INVOKABLE void addGraphicsRegion(double x, double y, double w, double h);
+    Q_INVOKABLE void removeGraphicsRegion(int index);
+    Q_INVOKABLE void clearGraphics();
+
+    double staticVoteFrac() const { return m_staticVoteFrac; }
+    void setStaticVoteFrac(double f);
 
     // Progress hooks driven by AppController while the worker runs.
     void setPropagating(bool on, const QString &label = QString());
@@ -131,6 +155,8 @@ signals:
     void overlayChanged();
     void keyframesChanged();
     void propagationChanged();
+    void graphicsChanged();
+    void staticVoteFracChanged();
     void edited();
 
 private:
@@ -157,9 +183,13 @@ private:
     // Dense per-frame track (phase F2). Empty when not propagated.
     int     m_denseStart{0};
     QVector<std::array<QPointF, 4>> m_dense;
+    QVector<double> m_denseConf;   // per-frame confidence (phase F5), or empty
     bool    m_propagating{false};
     double  m_propProgress{0.0};
     QString m_propLabel;
+
+    QVector<QRectF> m_graphics;   // normalized graphics regions (phase F5)
+    double  m_staticVoteFrac{0.15};   // static-mask majority-vote fraction
 };
 
 #endif

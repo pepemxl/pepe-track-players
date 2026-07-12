@@ -9,6 +9,14 @@ Item {
     property string selectedPointId: ""
     // Which reference point (A/B/C/D) the mini-pitch is assigning a landmark to.
     property string pitchEditId: "A"
+    // Graphics-region draw mode (phase F5): drag on the video to mark a static
+    // on-screen overlay (scoreboard/logo) to exclude from the flow estimation.
+    property bool graphicsMode: false
+    property bool graphicsDragging: false
+    property real gx0: 0
+    property real gy0: 0
+    property real gx1: 0
+    property real gy1: 0
 
     function pointById(id) {
         const pts = App.homography.points
@@ -128,13 +136,96 @@ Item {
                         }
                     }
 
+                    // Graphics-mask regions (phase F5): red overlays over the
+                    // masked on-screen areas, each with a delete handle.
+                    Repeater {
+                        model: App.homography.graphics
+                        delegate: Rectangle {
+                            required property var modelData
+                            required property int index
+                            visible: App.videoLoaded
+                            x: surface.fromVideoX(modelData.x * App.videoWidth)
+                            y: surface.fromVideoY(modelData.y * App.videoHeight)
+                            width: surface.fromVideoX((modelData.x + modelData.w) * App.videoWidth) - x
+                            height: surface.fromVideoY((modelData.y + modelData.h) * App.videoHeight) - y
+                            color: "#33d0503b"
+                            border.color: "#e0503b"
+                            border.width: 1.5
+                            Text {
+                                anchors.top: parent.top
+                                anchors.left: parent.left
+                                anchors.margins: 2
+                                text: "GFX"
+                                color: "#ffb59e"
+                                font { family: Theme.fontMono; pixelSize: 9; weight: Font.Bold }
+                            }
+                            Rectangle {
+                                anchors.top: parent.top
+                                anchors.right: parent.right
+                                width: 16; height: 16; radius: 8
+                                color: gfxDel.containsMouse ? Theme.red : "#b0503b"
+                                Text { anchors.centerIn: parent; text: "×"; color: "white"; font.pixelSize: 12 }
+                                MouseArea {
+                                    id: gfxDel
+                                    anchors.fill: parent
+                                    hoverEnabled: true
+                                    cursorShape: Qt.PointingHandCursor
+                                    onClicked: App.homography.removeGraphicsRegion(index)
+                                }
+                            }
+                        }
+                    }
+
+                    // Rubber-band while drawing a new graphics region.
+                    Rectangle {
+                        visible: view.graphicsDragging
+                        x: Math.min(view.gx0, view.gx1)
+                        y: Math.min(view.gy0, view.gy1)
+                        width: Math.abs(view.gx1 - view.gx0)
+                        height: Math.abs(view.gy1 - view.gy0)
+                        color: "#33ffb46b"
+                        border.color: Theme.orange
+                        border.width: 1.5
+                    }
+
+                    // Draw MouseArea (only in graphics mode; sits on top).
+                    MouseArea {
+                        anchors.fill: parent
+                        enabled: view.graphicsMode && App.videoLoaded
+                        visible: enabled
+                        z: 20
+                        cursorShape: Qt.CrossCursor
+                        onPressed: (mouse) => {
+                            view.gx0 = mouse.x; view.gy0 = mouse.y
+                            view.gx1 = mouse.x; view.gy1 = mouse.y
+                            view.graphicsDragging = true
+                        }
+                        onPositionChanged: (mouse) => {
+                            if (view.graphicsDragging) { view.gx1 = mouse.x; view.gy1 = mouse.y }
+                        }
+                        onReleased: {
+                            view.graphicsDragging = false
+                            const x0 = surface.toVideoX(Math.min(view.gx0, view.gx1))
+                            const y0 = surface.toVideoY(Math.min(view.gy0, view.gy1))
+                            const x1 = surface.toVideoX(Math.max(view.gx0, view.gx1))
+                            const y1 = surface.toVideoY(Math.max(view.gy0, view.gy1))
+                            if (App.videoWidth > 0 && App.videoHeight > 0)
+                                App.homography.addGraphicsRegion(
+                                    x0 / App.videoWidth, y0 / App.videoHeight,
+                                    (x1 - x0) / App.videoWidth, (y1 - y0) / App.videoHeight)
+                        }
+                    }
+
                     // Verify badge (top-right)
                     Rectangle {
                         anchors.top: parent.top
                         anchors.right: parent.right
                         anchors.margins: 12
+                        readonly property bool lowConf: App.homography.atPropagated
+                                                        && App.homography.currentConfidence < 0.35
                         width: verifyRow.implicitWidth + 20; height: 24; radius: 6
-                        color: App.homography.atPropagated ? "#d9122a3f"
+                        color: lowConf ? "#d9532016"
+                             : App.homography.atPropagated ? "#d9122a3f"
                              : App.homography.verified ? "#d91d3a2b" : "#d93a2f16"
                         Row {
                             id: verifyRow
@@ -142,7 +233,8 @@ Item {
                             spacing: 6
                             Rectangle {
                                 width: 6; height: 6; radius: 3
-                                color: App.homography.atPropagated ? "#5aa0ff"
+                                color: parent.parent.lowConf ? "#ff6b4a"
+                                     : App.homography.atPropagated ? "#5aa0ff"
                                      : App.homography.verified ? Theme.greenBright : Theme.yellow
                                 anchors.verticalCenter: parent.verticalCenter
                             }
@@ -150,11 +242,13 @@ Item {
                                 text: App.homography.atKeyframe
                                         ? "KEYFRAME · FRAME " + App.homography.currentFrame
                                     : App.homography.atPropagated
-                                        ? "PROPAGATED · FLOW"
+                                        ? (parent.parent.lowConf ? "LOW CONF · " : "PROPAGATED · ")
+                                          + Math.round(App.homography.currentConfidence * 100) + "%"
                                     : App.homography.verified
                                         ? "INTERPOLATED · " + App.homography.keyframeCount + " KF"
                                         : "NEEDS RECOMPUTE"
-                                color: App.homography.atPropagated ? "#d7e6ff"
+                                color: parent.parent.lowConf ? "#ffb59e"
+                                     : App.homography.atPropagated ? "#d7e6ff"
                                      : App.homography.verified ? "#e6f5ec" : "#f5ecd0"
                                 font { family: Theme.fontMono; pixelSize: 11; weight: Font.DemiBold }
                                 anchors.verticalCenter: parent.verticalCenter
@@ -1158,6 +1252,168 @@ Item {
                             cursorShape: enabled ? Qt.PointingHandCursor : Qt.ArrowCursor
                             onClicked: App.detectShots()
                         }
+                    }
+                }
+
+                // ---- graphics mask regions (phase F5, feed_tv) ----
+                Column {
+                    width: parent.width
+                    spacing: 8
+
+                    Item {
+                        width: parent.width
+                        height: 16
+                        Text {
+                            anchors.left: parent.left
+                            text: "GRAPHICS MASK"
+                            color: Theme.textDim
+                            font { family: Theme.fontUi; pixelSize: 11; weight: Font.Bold; letterSpacing: 0.5 }
+                        }
+                        Text {
+                            anchors.right: parent.right
+                            text: App.homography.graphicsCount + " region(s)"
+                            color: App.homography.graphicsCount > 0 ? "#ffb59e" : Theme.textFaint
+                            font { family: Theme.fontUi; pixelSize: 11 }
+                        }
+                    }
+
+                    Text {
+                        width: parent.width
+                        wrapMode: Text.WordWrap
+                        text: "Static on-screen overlays (scoreboard, logos) are "
+                              + "fixed in screen space and corrupt the camera-motion "
+                              + "estimate. Mark them to exclude from the flow."
+                        color: Theme.textFaint
+                        font { family: Theme.fontUi; pixelSize: 11 }
+                        lineHeight: 1.3
+                    }
+
+                    Row {
+                        width: parent.width
+                        spacing: 8
+
+                        Rectangle {
+                            width: App.homography.graphicsCount > 0 ? (parent.width - 8) / 2 : parent.width
+                            height: 34
+                            radius: 8
+                            readonly property bool on: App.videoLoaded
+                            color: !on ? Theme.surfaceHi
+                                 : view.graphicsMode ? Theme.orange
+                                 : (gfxDrawMouse.containsMouse ? "#6b4a12" : "#5c3f10")
+                            border.color: "#9c7a2e"
+                            border.width: 1
+                            Text {
+                                anchors.centerIn: parent
+                                text: view.graphicsMode ? "Done drawing" : "Draw region"
+                                color: view.graphicsMode ? "#241505"
+                                     : parent.on ? "#ffe6bd" : Theme.textFaint
+                                font { family: Theme.fontUi; pixelSize: 12; weight: Font.DemiBold }
+                            }
+                            MouseArea {
+                                id: gfxDrawMouse
+                                anchors.fill: parent
+                                hoverEnabled: true
+                                enabled: parent.on
+                                cursorShape: Qt.PointingHandCursor
+                                onClicked: view.graphicsMode = !view.graphicsMode
+                            }
+                        }
+                        Rectangle {
+                            visible: App.homography.graphicsCount > 0
+                            width: (parent.width - 8) / 2
+                            height: 34
+                            radius: 8
+                            color: gfxClearMouse.containsMouse ? Theme.borderHi : Theme.surfaceHi
+                            border.color: Theme.border2
+                            border.width: 1
+                            Text {
+                                anchors.centerIn: parent
+                                text: "Clear all"
+                                color: Theme.text
+                                font { family: Theme.fontUi; pixelSize: 12; weight: Font.DemiBold }
+                            }
+                            MouseArea {
+                                id: gfxClearMouse
+                                anchors.fill: parent
+                                hoverEnabled: true
+                                cursorShape: Qt.PointingHandCursor
+                                onClicked: { view.graphicsMode = false; App.homography.clearGraphics() }
+                            }
+                        }
+                    }
+
+                    Text {
+                        visible: view.graphicsMode
+                        width: parent.width
+                        wrapMode: Text.WordWrap
+                        text: "Drag a rectangle over the graphic on the video."
+                        color: Theme.orange
+                        font { family: Theme.fontUi; pixelSize: 11; weight: Font.DemiBold }
+                    }
+                }
+
+                // ---- homography solver backend selector ----
+                Column {
+                    width: parent.width
+                    spacing: 6
+
+                    Item {
+                        width: parent.width
+                        height: 16
+                        Text {
+                            anchors.left: parent.left
+                            text: "SOLVER"
+                            color: Theme.textDim
+                            font { family: Theme.fontUi; pixelSize: 11; weight: Font.Bold; letterSpacing: 0.5 }
+                        }
+                        Text {
+                            anchors.right: parent.right
+                            text: "RANSAC engine"
+                            color: Theme.textFaint
+                            font { family: Theme.fontUi; pixelSize: 11 }
+                        }
+                    }
+
+                    Row {
+                        width: parent.width
+                        spacing: 6
+                        Repeater {
+                            model: [{ id: "opencv", label: "OpenCV" }, { id: "custom", label: "Custom" }]
+                            delegate: Rectangle {
+                                required property var modelData
+                                readonly property bool sel: App.solverBackend === modelData.id
+                                width: (parent.width - 6) / 2
+                                height: 30
+                                radius: 6
+                                color: sel ? Theme.green
+                                     : (slvMouse.containsMouse ? Theme.borderHi : Theme.surfaceHi)
+                                border.color: sel ? Theme.green : Theme.border2
+                                border.width: 1
+                                Text {
+                                    anchors.centerIn: parent
+                                    text: modelData.label
+                                    color: sel ? "#10231a" : Theme.text
+                                    font { family: Theme.fontUi; pixelSize: 12; weight: Font.DemiBold }
+                                }
+                                MouseArea {
+                                    id: slvMouse
+                                    anchors.fill: parent
+                                    hoverEnabled: true
+                                    cursorShape: Qt.PointingHandCursor
+                                    onClicked: App.solverBackend = modelData.id
+                                }
+                            }
+                        }
+                    }
+
+                    Text {
+                        width: parent.width
+                        wrapMode: Text.WordWrap
+                        text: "OpenCV uses cv::findHomography; Custom uses the "
+                              + "in-house normalized-DLT + RANSAC (fully controllable)."
+                        color: Theme.textFaint
+                        font { family: Theme.fontUi; pixelSize: 11 }
+                        lineHeight: 1.3
                     }
                 }
                 }

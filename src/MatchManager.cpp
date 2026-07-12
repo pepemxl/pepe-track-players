@@ -338,7 +338,93 @@ void MatchManager::registerOrLoad()
 
     m_lineupsExtracted = QFile::exists(lineupsJsonPath());
 
+    loadMatchName();
     updateGamesEntry();
+}
+
+void MatchManager::loadMatchName()
+{
+    m_matchName.clear();
+    if (m_matchId <= 0)
+        return;
+    QFile file(gamesJsonPath());
+    if (!file.open(QIODevice::ReadOnly))
+        return;
+    const QJsonArray matches = QJsonDocument::fromJson(file.readAll())
+                                   .object()[QStringLiteral("matches")].toArray();
+    for (const QJsonValue &v : matches) {
+        const QJsonObject e = v.toObject();
+        if (e[QStringLiteral("id")].toInt() == m_matchId) {
+            m_matchName = e[QStringLiteral("name")].toString();
+            return;
+        }
+    }
+}
+
+void MatchManager::renameProject(const QString &name)
+{
+    if (m_matchId <= 0)
+        return;
+    const QString trimmed = name.trimmed();
+    if (trimmed == m_matchName)
+        return;
+    m_matchName = trimmed;
+    updateGamesEntry();   // rewrites this match's entry, including the name
+    emit matchChanged();
+}
+
+bool MatchManager::deleteProject()
+{
+    if (m_matchId <= 0)
+        return false;
+    m_worker->stopAndWait();
+    m_lineup->stopAndWait();
+
+    // Drop this match's entry from games.json.
+    QFile file(gamesJsonPath());
+    if (file.open(QIODevice::ReadOnly)) {
+        const QJsonArray matches = QJsonDocument::fromJson(file.readAll())
+                                       .object()[QStringLiteral("matches")].toArray();
+        file.close();
+        QJsonArray kept;
+        for (const QJsonValue &v : matches)
+            if (v.toObject()[QStringLiteral("id")].toInt() != m_matchId)
+                kept.append(v);
+        QJsonObject root;
+        root[QStringLiteral("matches")] = kept;
+        if (file.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+            file.write(QJsonDocument(root).toJson(QJsonDocument::Indented));
+            file.close();
+        }
+    }
+
+    // Delete the whole artifact directory (chunks, masks, lineups, ...).
+    if (!m_matchDir.isEmpty()) {
+        QDir dir(m_matchDir);
+        if (dir.exists())
+            dir.removeRecursively();
+    }
+
+    // Reset to a no-project state.
+    m_matchId = 0;
+    m_matchName.clear();
+    m_videoId = 0;
+    m_videoRole.clear();
+    m_videoSegment.clear();
+    m_crop = QRect();
+    m_cropPending = false;
+    m_status.clear();
+    m_matchDir.clear();
+    m_chunkCount = 0;
+    m_preprocessedPath.clear();
+    m_videosJson = QJsonArray();
+    m_markers.clear();
+    m_lineupsExtracted = false;
+    m_videoPath.clear();
+
+    emit matchChanged();
+    emit markersChanged();
+    return true;
 }
 
 void MatchManager::migrateLegacyArtifacts()
@@ -408,6 +494,8 @@ void MatchManager::updateGamesEntry()
     QJsonObject entry;
     entry[QStringLiteral("id")]      = m_matchId;
     entry[QStringLiteral("dir")]     = matchDirName();
+    if (!m_matchName.isEmpty())
+        entry[QStringLiteral("name")] = m_matchName;
     entry[QStringLiteral("videos")]  = m_videosJson;
     entry[QStringLiteral("updated")] = QDateTime::currentDateTime().toString(Qt::ISODate);
 
@@ -463,8 +551,9 @@ QVariantList MatchManager::listProjects() const
     for (const QJsonValue &v : matches) {
         const QJsonObject entry = normalizedMatchEntry(v.toObject());
         QVariantMap m;
-        m[QStringLiteral("id")]  = entry[QStringLiteral("id")].toInt();
-        m[QStringLiteral("dir")] = entry[QStringLiteral("dir")].toString();
+        m[QStringLiteral("id")]   = entry[QStringLiteral("id")].toInt();
+        m[QStringLiteral("dir")]  = entry[QStringLiteral("dir")].toString();
+        m[QStringLiteral("name")] = entry[QStringLiteral("name")].toString();
         QVariantList videos;
         for (const QJsonValue &vv : entry[QStringLiteral("videos")].toArray()) {
             const QJsonObject video = vv.toObject();
@@ -501,6 +590,7 @@ int MatchManager::createProject()
 
     // Empty project context: no current video until one is added.
     m_matchId = maxId + 1;
+    m_matchName.clear();
     m_videoId = 0;
     m_videoPath.clear();
     m_videoRole.clear();

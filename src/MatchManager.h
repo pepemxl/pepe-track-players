@@ -31,6 +31,8 @@ class MatchManager : public QObject
     Q_OBJECT
     Q_PROPERTY(bool registered READ registered NOTIFY matchChanged)
     Q_PROPERTY(int matchId READ matchId NOTIFY matchChanged)
+    // Optional user-given project name; empty falls back to "Project #<id>".
+    Q_PROPERTY(QString matchName READ matchName NOTIFY matchChanged)
     Q_PROPERTY(QString status READ status NOTIFY matchChanged)
     Q_PROPERTY(QString matchDir READ matchDir NOTIFY matchChanged)
     Q_PROPERTY(int chunkCount READ chunkCount NOTIFY matchChanged)
@@ -60,7 +62,15 @@ public:
 
     bool registered() const { return m_matchId > 0; }
     int matchId() const { return m_matchId; }
+    QString matchName() const { return m_matchName; }
     QString status() const { return m_status; }
+
+    // Renames the current project (persisted in games.json). Empty clears the
+    // name (falls back to "Project #<id>").
+    Q_INVOKABLE void renameProject(const QString &name);
+    // Deletes the current project: removes its games.json entry and its whole
+    // match_<id> artifact directory, then resets to a no-project state.
+    Q_INVOKABLE bool deleteProject();
     QString matchDir() const { return m_matchDir; }
     int chunkCount() const { return m_chunkCount; }
     int videoId() const { return m_videoId; }
@@ -160,6 +170,7 @@ private:
 
     void registerOrLoad();
     void updateGamesEntry();
+    void loadMatchName();   // read the current match's name from games.json
     void migrateLegacyArtifacts();
     void loadMarkers();
     void saveMarkers();
@@ -179,6 +190,7 @@ private:
     int     m_totalFrames{0};
 
     int     m_matchId{0};
+    QString m_matchName;
     int     m_videoId{0};
     QString m_videoRole;
     QString m_videoSegment;
