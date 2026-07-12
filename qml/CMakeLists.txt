@@ -26,6 +26,7 @@ qt_add_qml_module(pepetrack_qml
         MetadataView.qml
         RosterTable.qml
         TrackingView.qml
+        FeaturesView.qml
         StatCard.qml
         EditField.qml
 )

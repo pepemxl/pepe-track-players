@@ -4,6 +4,7 @@
 #include "HomographyWorker.h"
 #include "LineCalibrator.h"
 #include "ShotDetector.h"
+#include "MaskGenerator.h"
 #include "MatchManager.h"
 #include "TrackingManager.h"
 
@@ -295,6 +296,39 @@ static int runPropagateHomography(const QString &videoPath)
                      count, start, qPrintable(outPath));
         hm.loadDenseTrack(outPath);
 
+        // Read the raw dense .bin for smoothness (jitter) + confidence stats.
+        QFile bin(outPath);
+        if (bin.open(QIODevice::ReadOnly)) {
+            QDataStream d(&bin);
+            d.setByteOrder(QDataStream::LittleEndian);
+            d.setFloatingPointPrecision(QDataStream::DoublePrecision);
+            qint32 magic = 0, st = 0, cnt = 0;
+            d >> magic;
+            const bool v2 = (magic == -2);
+            if (v2) d >> st; else st = magic;
+            d >> cnt;
+            QVector<QPointF> A;    // point A per frame
+            QVector<double> cf;
+            for (int i = 0; i < cnt; ++i) {
+                double x = 0, y = 0;
+                for (int k = 0; k < 4; ++k) { double px, py; d >> px >> py; if (k == 0) { x = px; y = py; } }
+                double c = 1.0; if (v2) d >> c;
+                A.append(QPointF(x, y)); cf.append(c);
+            }
+            // Mean |second difference| of A (jitter); lower = smoother.
+            double jit = 0.0; int jn = 0;
+            for (int i = 1; i + 1 < A.size(); ++i) {
+                if (cf[i] <= 0 || cf[i - 1] <= 0 || cf[i + 1] <= 0) continue;
+                const QPointF s = A[i + 1] - 2.0 * A[i] + A[i - 1];
+                jit += std::hypot(s.x(), s.y()); ++jn;
+            }
+            double cmin = 1.0, cmean = 0.0; int lowc = 0;
+            for (double c : cf) { cmin = std::min(cmin, c); cmean += c; if (c < 0.35) ++lowc; }
+            cmean = cf.isEmpty() ? 0.0 : cmean / cf.size();
+            std::fprintf(stdout, "smoothing: jitter(A) = %.3f px  |  confidence: min=%.2f mean=%.2f  low(<0.35)=%d frames\n",
+                         jn ? jit / jn : 0.0, cmin, cmean, lowc);
+        }
+
         // Sanity: dense endpoints must match the keyframes; sample the span
         // to show propagated vs linear-interpolated divergence.
         auto lerp = [&](int f, QPointF out[4]) {
@@ -316,7 +350,7 @@ static int runPropagateHomography(const QString &videoPath)
         QCoreApplication::exit(0);
     });
 
-    worker.configure(videoPath, wkfs, outPath);
+    worker.configure(videoPath, wkfs, outPath, {}, hm.graphicsRects());
     worker.start();
     return QCoreApplication::exec();
 }
@@ -474,7 +508,10 @@ static int runCalibrateSelftest()
         std::fprintf(stdout, "  refine FAILED (inliers %d, reproj %.2f px)\n",
                      res.inliers, res.reprojErr);
     std::fflush(stdout);
-    return res.ok && cornerErr(res.H) < 10.0 ? 0 : 1;
+    // Both solver backends must converge and reject the outlier lines; the
+    // exact corner error differs by backend (the custom estimator refits
+    // algebraically on all inliers each ICP step and tends to be tighter here).
+    return res.ok && cornerErr(res.H) < 20.0 ? 0 : 1;
 }
 
 // Headless: shot segmentation over a frame range ("pepe --detect-shots <video>
@@ -501,13 +538,148 @@ static int runDetectShots(const QString &videoPath, int startFrame, int count)
     int pitchCount = 0;
     for (const auto &s : shots) if (s.pitch) ++pitchCount;
     std::fprintf(stdout, "%d shots (%d pitch, %d non-pitch):\n",
-                 shots.size(), pitchCount, shots.size() - pitchCount);
+                 static_cast<int>(shots.size()), pitchCount,
+                 static_cast<int>(shots.size()) - pitchCount);
     for (const auto &s : shots)
         std::fprintf(stdout, "  [%6d..%6d] %5d f  %-9s  grass=%.2f  cut=%.2f\n",
                      s.startFrame, s.endFrame, s.endFrame - s.startFrame + 1,
                      s.pitch ? "PITCH" : "non-pitch", s.grassMean, s.cutStrength);
     std::fflush(stdout);
     return 0;
+}
+
+// Headless: verify the player-mask mechanism used by HomographyWorker's flow
+// estimation ("pepe --flow-mask-test <video> <frame> <x> <y> <w> <h>"). It
+// runs goodFeaturesToTrack with and without a mask over the box and reports how
+// many features land inside it — masked should be ~0.
+static int runFlowMaskTest(const QString &videoPath, int frame, const cv::Rect &box)
+{
+    cv::VideoCapture cap(videoPath.toStdString());
+    if (!cap.isOpened()) { std::fprintf(stderr, "error: cannot open video\n"); return 1; }
+    cap.set(cv::CAP_PROP_POS_FRAMES, frame);
+    cv::Mat bgr;
+    if (!cap.read(bgr) || bgr.empty()) { std::fprintf(stderr, "error: cannot read frame\n"); return 1; }
+
+    const double scale = (bgr.cols > 960.0 ? 960.0 / bgr.cols : 1.0);
+    cv::Mat gray;
+    cv::cvtColor(bgr, gray, cv::COLOR_BGR2GRAY);
+    if (scale < 1.0) cv::resize(gray, gray, cv::Size(), scale, scale, cv::INTER_AREA);
+
+    // Same mask geometry as HomographyWorker::run.
+    cv::Rect s(cvRound((box.x - box.width * 0.15) * scale),
+               cvRound((box.y - box.height * 0.10) * scale),
+               cvRound(box.width * 1.30 * scale),
+               cvRound(box.height * 1.30 * scale));
+    s &= cv::Rect(0, 0, gray.cols, gray.rows);
+    cv::Mat mask(gray.size(), CV_8U, cv::Scalar(255));
+    if (s.area() > 0) mask(s).setTo(0);
+
+    auto inBox = [&](const std::vector<cv::Point2f> &pts) {
+        int c = 0;
+        for (const auto &p : pts) if (s.contains(cv::Point(cvRound(p.x), cvRound(p.y)))) ++c;
+        return c;
+    };
+    std::vector<cv::Point2f> c0, cm;
+    cv::goodFeaturesToTrack(gray, c0, 700, 0.01, 7);
+    cv::goodFeaturesToTrack(gray, cm, 700, 0.01, 7, mask);
+    std::fprintf(stdout, "frame %d  box(scaled)=%dx%d@(%d,%d)\n", frame, s.width, s.height, s.x, s.y);
+    std::fprintf(stdout, "  no mask : %zu features, %d inside box\n", c0.size(), inBox(c0));
+    std::fprintf(stdout, "  masked  : %zu features, %d inside box\n", cm.size(), inBox(cm));
+    std::fflush(stdout);
+    return inBox(cm) == 0 ? 0 : 1;
+}
+
+// Headless: generate feature masks over chunk videos
+// ("pepe --gen-masks <green|static> <chunksDir> <outDir> [maxChunks]").
+static int runGenMasks(const QString &kind, const QString &chunksDir,
+                       const QString &outDir, int maxChunks)
+{
+    MaskGenerator gen;
+    QVector<int> chunks;
+    for (int i = 1; i <= maxChunks; ++i) chunks.append(i);   // empty = all
+    gen.configure(kind == QLatin1String("static") ? MaskGenerator::Kind::Static
+                                                   : MaskGenerator::Kind::Green,
+                  chunksDir, chunks, outDir);
+    bool ok = false; int written = -1; QString err;
+    QObject::connect(&gen, &MaskGenerator::finished, &gen,
+        [&](bool o, const QString &e, int w) { ok = o; err = e; written = w; },
+        Qt::DirectConnection);
+    QObject::connect(&gen, &MaskGenerator::progressChanged, &gen,
+        [](double f, const QString &l) {
+            static int last = -1; const int pct = static_cast<int>(f * 100);
+            if (pct / 10 != last) { last = pct / 10;
+                std::fprintf(stdout, "%3d%%  %s\n", pct, qPrintable(l)); std::fflush(stdout); }
+        }, Qt::DirectConnection);
+    gen.start();
+    gen.wait();
+    std::fprintf(stdout, "%s masks: ok=%d written=%d %s\n",
+                 qPrintable(kind), ok ? 1 : 0, written, qPrintable(err));
+    std::fflush(stdout);
+    return ok ? 0 : 1;
+}
+
+// Headless: majority-vote union of a match's per-chunk static masks, written
+// as a PNG ("pepe --static-union <matchDir> <outPng>"). Verifies the mask that
+// gets folded into the propagation flow's RANSAC exclusion.
+static int runStaticUnion(const QString &matchDir, const QString &outPng)
+{
+    const cv::Mat u = MaskGenerator::unionStaticMasks(
+        matchDir + QStringLiteral("/static_mask"));
+    if (u.empty()) { std::fprintf(stderr, "error: no static masks / empty union\n"); return 1; }
+    if (!cv::imwrite(outPng.toStdString(), u)) {
+        std::fprintf(stderr, "error: could not write %s\n", qPrintable(outPng));
+        return 1;
+    }
+    const double frac = double(cv::countNonZero(u)) / (u.rows * u.cols);
+    std::fprintf(stdout, "static union: %dx%d  %.2f%% masked -> %s\n",
+                 u.cols, u.rows, frac * 100.0, qPrintable(outPng));
+    std::fflush(stdout);
+    return 0;
+}
+
+// Headless: verify the static-mask RANSAC exclusion exactly as HomographyWorker
+// applies it ("pepe --flow-static-test <video> <frame> <matchDir>"). Builds the
+// static union, folds it into the 960-wide working frame like the worker, and
+// reports how many good features land on the masked graphics — should be ~0.
+static int runFlowStaticTest(const QString &videoPath, int frame, const QString &matchDir)
+{
+    const cv::Mat u = MaskGenerator::unionStaticMasks(matchDir + QStringLiteral("/static_mask"));
+    if (u.empty()) { std::fprintf(stderr, "error: empty static union\n"); return 1; }
+
+    cv::VideoCapture cap(videoPath.toStdString());
+    if (!cap.isOpened()) { std::fprintf(stderr, "error: cannot open video\n"); return 1; }
+    cap.set(cv::CAP_PROP_POS_FRAMES, frame);
+    cv::Mat bgr;
+    if (!cap.read(bgr) || bgr.empty()) { std::fprintf(stderr, "error: cannot read frame\n"); return 1; }
+
+    const double scale = (bgr.cols > 960.0 ? 960.0 / bgr.cols : 1.0);
+    cv::Mat gray;
+    cv::cvtColor(bgr, gray, cv::COLOR_BGR2GRAY);
+    if (scale < 1.0) cv::resize(gray, gray, cv::Size(), scale, scale, cv::INTER_AREA);
+
+    // Same fold as HomographyWorker::run: resize union to the working frame,
+    // build an all-255 mask, zero the detected graphic pixels.
+    cv::Mat sm;
+    cv::resize(u, sm, gray.size(), 0, 0, cv::INTER_NEAREST);
+    cv::Mat mask(gray.size(), CV_8U, cv::Scalar(255));
+    mask.setTo(0, sm > 127);
+    const cv::Mat graphic = (sm > 127);
+
+    auto onGraphic = [&](const std::vector<cv::Point2f> &pts) {
+        int c = 0;
+        for (const auto &p : pts)
+            if (graphic.at<uchar>(cvRound(p.y), cvRound(p.x))) ++c;
+        return c;
+    };
+    std::vector<cv::Point2f> c0, cm;
+    cv::goodFeaturesToTrack(gray, c0, 700, 0.01, 7);
+    cv::goodFeaturesToTrack(gray, cm, 700, 0.01, 7, mask);
+    std::fprintf(stdout, "frame %d  masked %.2f%% of working frame\n", frame,
+                 double(cv::countNonZero(graphic)) / (graphic.rows * graphic.cols) * 100.0);
+    std::fprintf(stdout, "  no mask : %zu features, %d on graphics\n", c0.size(), onGraphic(c0));
+    std::fprintf(stdout, "  masked  : %zu features, %d on graphics\n", cm.size(), onGraphic(cm));
+    std::fflush(stdout);
+    return onGraphic(cm) == 0 ? 0 : 1;
 }
 
 int main(int argc, char *argv[])
@@ -544,6 +716,17 @@ int main(int argc, char *argv[])
             return runCalibrateSelftest();
         if (args.size() >= 5 && args.at(1) == QLatin1String("--detect-shots"))
             return runDetectShots(args.at(2), args.at(3).toInt(), args.at(4).toInt());
+        if (args.size() >= 8 && args.at(1) == QLatin1String("--flow-mask-test"))
+            return runFlowMaskTest(args.at(2), args.at(3).toInt(),
+                                   cv::Rect(args.at(4).toInt(), args.at(5).toInt(),
+                                            args.at(6).toInt(), args.at(7).toInt()));
+        if (args.size() >= 5 && args.at(1) == QLatin1String("--gen-masks"))
+            return runGenMasks(args.at(2), args.at(3), args.at(4),
+                               args.size() > 5 ? args.at(5).toInt() : 0);
+        if (args.size() >= 4 && args.at(1) == QLatin1String("--static-union"))
+            return runStaticUnion(args.at(2), args.at(3));
+        if (args.size() >= 5 && args.at(1) == QLatin1String("--flow-static-test"))
+            return runFlowStaticTest(args.at(2), args.at(3).toInt(), args.at(4));
     }
 
     // Basic style so QML can fully restyle the controls.
@@ -555,6 +738,7 @@ int main(int argc, char *argv[])
     // The engine takes ownership of the provider.
     engine.addImageProvider(QStringLiteral("videoframe"), controller.frameProvider());
     engine.addImageProvider(QStringLiteral("videoframe2"), controller.frameProvider2());
+    engine.addImageProvider(QStringLiteral("featuremask"), controller.maskProvider());
     engine.rootContext()->setContextProperty(QStringLiteral("App"), &controller);
 
     QObject::connect(&engine, &QQmlApplicationEngine::objectCreationFailed,

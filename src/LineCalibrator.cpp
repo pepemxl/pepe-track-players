@@ -1,90 +1,10 @@
 #include "LineCalibrator.h"
+#include "HomographySolver.h"
 
 #include <array>
 #include <cmath>
 
 namespace {
-
-// ---- normalized DLT + RANSAC (image -> pitch), calib3d-free ----------------
-
-cv::Mat normalizePoints(const std::vector<cv::Point2f> &pts, std::vector<cv::Point2f> &out)
-{
-    const int n = static_cast<int>(pts.size());
-    cv::Point2f c(0.f, 0.f);
-    for (const auto &p : pts) c += p;
-    c *= (n > 0 ? 1.0f / n : 0.0f);
-    double meanDist = 0.0;
-    for (const auto &p : pts) meanDist += cv::norm(cv::Point2f(p.x - c.x, p.y - c.y));
-    meanDist = (n > 0 ? meanDist / n : 0.0);
-    const double s = (meanDist > 1e-9 ? std::sqrt(2.0) / meanDist : 1.0);
-    out.resize(n);
-    for (int i = 0; i < n; ++i)
-        out[i] = cv::Point2f(static_cast<float>((pts[i].x - c.x) * s),
-                             static_cast<float>((pts[i].y - c.y) * s));
-    return (cv::Mat_<double>(3, 3) << s, 0, -s * c.x, 0, s, -s * c.y, 0, 0, 1);
-}
-
-cv::Mat homographyDLT(const std::vector<cv::Point2f> &src, const std::vector<cv::Point2f> &dst)
-{
-    const int n = static_cast<int>(src.size());
-    if (n < 4 || dst.size() != src.size()) return cv::Mat();
-    std::vector<cv::Point2f> sn, dn;
-    cv::Mat T1 = normalizePoints(src, sn);
-    cv::Mat T2 = normalizePoints(dst, dn);
-    cv::Mat A = cv::Mat::zeros(2 * n, 9, CV_64F);
-    for (int i = 0; i < n; ++i) {
-        const double x = sn[i].x, y = sn[i].y, u = dn[i].x, v = dn[i].y;
-        double *r0 = A.ptr<double>(2 * i);
-        double *r1 = A.ptr<double>(2 * i + 1);
-        r0[0] = -x; r0[1] = -y; r0[2] = -1; r0[6] = u * x; r0[7] = u * y; r0[8] = u;
-        r1[3] = -x; r1[4] = -y; r1[5] = -1; r1[6] = v * x; r1[7] = v * y; r1[8] = v;
-    }
-    cv::Mat AtA = A.t() * A, evals, evecs;
-    cv::eigen(AtA, evals, evecs);
-    cv::Mat hv = evecs.row(8).t();
-    cv::Mat Hn = hv.reshape(1, 3);
-    cv::Mat H = T2.inv() * Hn * T1;
-    if (std::abs(H.at<double>(2, 2)) > 1e-12) H /= H.at<double>(2, 2);
-    return H;
-}
-
-cv::Mat ransacDLT(const std::vector<cv::Point2f> &src, const std::vector<cv::Point2f> &dst,
-                  double thresh, int iters, std::vector<char> *outInliers)
-{
-    const int n = static_cast<int>(src.size());
-    if (n < 4) return cv::Mat();
-    cv::RNG rng(0xF3F3);
-    int bestCount = -1;
-    std::vector<char> best;
-    const double t2 = thresh * thresh;
-    for (int it = 0; it < iters; ++it) {
-        int idx[4];
-        for (int k = 0; k < 4; ++k) {
-            bool dup = true;
-            while (dup) { idx[k] = rng.uniform(0, n); dup = false;
-                for (int j = 0; j < k; ++j) if (idx[j] == idx[k]) { dup = true; break; } }
-        }
-        std::vector<cv::Point2f> s4{src[idx[0]], src[idx[1]], src[idx[2]], src[idx[3]]};
-        std::vector<cv::Point2f> d4{dst[idx[0]], dst[idx[1]], dst[idx[2]], dst[idx[3]]};
-        cv::Mat H = homographyDLT(s4, d4);
-        if (H.empty()) continue;
-        std::vector<cv::Point2f> proj;
-        cv::perspectiveTransform(src, proj, H);
-        int cnt = 0;
-        std::vector<char> inl(n, 0);
-        for (int i = 0; i < n; ++i) {
-            const double dx = proj[i].x - dst[i].x, dy = proj[i].y - dst[i].y;
-            if (dx * dx + dy * dy < t2) { inl[i] = 1; ++cnt; }
-        }
-        if (cnt > bestCount) { bestCount = cnt; best = inl; }
-    }
-    if (bestCount < 4) return cv::Mat();
-    std::vector<cv::Point2f> si, di;
-    for (int i = 0; i < n; ++i) if (best[i]) { si.push_back(src[i]); di.push_back(dst[i]); }
-    cv::Mat H = homographyDLT(si, di);
-    if (outInliers) *outInliers = best;
-    return H;
-}
 
 // ---- pitch model (105 x 68 m) straight segments ----------------------------
 
@@ -284,7 +204,7 @@ LineCalibrator::Result LineCalibrator::refine(const cv::Mat &Hinit,
         std::vector<char> inl;
         // Tighten the RANSAC inlier band together with the snap gate.
         const double ransacThresh = std::max(0.6, gates[iter] * 0.45);
-        cv::Mat Hn = ransacDLT(img, pit, ransacThresh, 600, &inl);
+        cv::Mat Hn = homog::findHomography(img, pit, ransacThresh, 600, nullptr, &inl);
         if (Hn.empty()) break;
         H = Hn;
         inliers = inl;

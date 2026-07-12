@@ -34,11 +34,14 @@ Item {
         }
     }
 
+    // When the grass preview is active it re-computes on every frame so the
+    // mask follows the picture as you step / play through the video.
+    property bool greenFollow: false
+
     function refresh() { summary = App.maskSummary() }
 
-    // Defining logo boxes corner-by-corner is fiddly on a moving picture, so
-    // pause playback whenever this tab is opened (frames stay put; scrub the
-    // Video tab first if you need a different reference frame).
+    // Pause playback when the tab is opened so the first frame is stable
+    // (use the transport below to step or play through it).
     onVisibleChanged: if (visible && App.playing) App.pause()
 
     Component.onCompleted: refresh()
@@ -46,6 +49,11 @@ Item {
         target: App
         function onMaskGenChanged() { if (!App.maskGenRunning) view.refresh() }
         function onVideoStateChanged() { view.refresh() }
+        // Keep the grass overlay in sync with the currently displayed frame.
+        function onFrameSerialChanged() {
+            if (view.greenFollow && App.videoLoaded)
+                App.previewGreenMask()
+        }
     }
 
     Row {
@@ -64,7 +72,7 @@ Item {
                 VideoSurface {
                     id: surface
                     width: parent.width
-                    height: parent.height - legend.height - 14
+                    height: parent.height - transport.height - legend.height - 28
 
                     // Tinted mask overlay (green = grass, red = static graphics).
                     // The provider returns a pre-tinted ARGB image at the source
@@ -194,6 +202,118 @@ Item {
                             enabled: view.hasTL || view.hasBR
                             onTriggered: { view.hasTL = false; view.hasBR = false }
                         }
+                    }
+                }
+
+                // ---- transport: step / play through frames ----
+                Row {
+                    id: transport
+                    width: parent.width
+                    height: 34
+                    spacing: 12
+                    enabled: App.videoLoaded
+                    opacity: App.videoLoaded ? 1 : 0.4
+
+                    // Step back one frame.
+                    Rectangle {
+                        width: 34; height: 34; radius: 8
+                        color: prevMouse.containsMouse ? Theme.borderHi : Theme.surfaceHi
+                        anchors.verticalCenter: parent.verticalCenter
+                        Text { anchors.centerIn: parent; text: "◀"; color: Theme.textBright; font.pixelSize: 12 }
+                        MouseArea {
+                            id: prevMouse; anchors.fill: parent; hoverEnabled: true
+                            cursorShape: Qt.PointingHandCursor
+                            onClicked: App.stepFrames(-1)
+                        }
+                    }
+
+                    // Play / pause.
+                    Rectangle {
+                        width: 34; height: 34; radius: 8
+                        color: playMouse.containsMouse ? Theme.borderHi : Theme.surfaceHi
+                        anchors.verticalCenter: parent.verticalCenter
+                        Row {
+                            visible: App.playing
+                            anchors.centerIn: parent
+                            spacing: 3
+                            Rectangle { width: 3; height: 12; color: Theme.textBright }
+                            Rectangle { width: 3; height: 12; color: Theme.textBright }
+                        }
+                        Text {
+                            visible: !App.playing
+                            anchors.centerIn: parent
+                            text: "▶"; color: Theme.textBright; font.pixelSize: 13
+                        }
+                        MouseArea {
+                            id: playMouse; anchors.fill: parent; hoverEnabled: true
+                            cursorShape: Qt.PointingHandCursor
+                            onClicked: App.togglePlay()
+                        }
+                    }
+
+                    // Step forward one frame.
+                    Rectangle {
+                        width: 34; height: 34; radius: 8
+                        color: nextMouse.containsMouse ? Theme.borderHi : Theme.surfaceHi
+                        anchors.verticalCenter: parent.verticalCenter
+                        Text { anchors.centerIn: parent; text: "▶▏"; color: Theme.textBright; font.pixelSize: 11 }
+                        MouseArea {
+                            id: nextMouse; anchors.fill: parent; hoverEnabled: true
+                            cursorShape: Qt.PointingHandCursor
+                            onClicked: App.stepFrames(1)
+                        }
+                    }
+
+                    Text {
+                        id: tcLeft
+                        text: App.timecode(App.positionSec)
+                        color: Theme.textMid
+                        font { family: Theme.fontMono; pixelSize: 12 }
+                        anchors.verticalCenter: parent.verticalCenter
+                    }
+
+                    // Scrubber.
+                    Item {
+                        width: parent.width - 34 * 3 - 12 * 5
+                               - tcLeft.width - frameText.width
+                        height: 34
+                        anchors.verticalCenter: parent.verticalCenter
+
+                        Rectangle {
+                            id: ftrack
+                            anchors.verticalCenter: parent.verticalCenter
+                            width: parent.width
+                            height: 6; radius: 3
+                            color: "#262b33"
+                            Rectangle {
+                                width: App.totalFrames > 1
+                                    ? ftrack.width * App.currentFrame / (App.totalFrames - 1) : 0
+                                height: parent.height; radius: 3
+                                color: Theme.green
+                            }
+                            Rectangle {
+                                x: (App.totalFrames > 1
+                                    ? ftrack.width * App.currentFrame / (App.totalFrames - 1) : 0) - 6
+                                anchors.verticalCenter: parent.verticalCenter
+                                width: 12; height: 12; radius: 6
+                                color: Theme.text
+                                border.color: "#4d30d980"; border.width: 3
+                            }
+                        }
+                        MouseArea {
+                            anchors.fill: parent
+                            enabled: App.videoLoaded
+                            onPressed: (mouse) => App.seekFrac(mouse.x / width)
+                            onPositionChanged: (mouse) => { if (pressed) App.seekFrac(mouse.x / width) }
+                        }
+                    }
+
+                    Text {
+                        id: frameText
+                        text: "frame " + App.currentFrame + " / " + App.totalFrames
+                        color: Theme.textFaint
+                        font { family: Theme.fontMono; pixelSize: 12 }
+                        anchors.verticalCenter: parent.verticalCenter
                     }
                 }
 

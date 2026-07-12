@@ -4,7 +4,9 @@
 #include "HomographyManager.h"
 #include "HomographyWorker.h"
 #include "LineCalibrator.h"
+#include "HomographySolver.h"
 #include "ShotDetector.h"
+#include "MaskGenerator.h"
 #include "MatchMetadata.h"
 #include "RosterModel.h"
 #include "TagsModel.h"
@@ -13,6 +15,7 @@
 #include "MatchManager.h"
 #include "VideoEngine.h"
 
+#include <QColor>
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
@@ -22,6 +25,7 @@
 #include <QVariantMap>
 #include <algorithm>
 #include <cmath>
+#include <cstring>
 
 namespace {
 
@@ -40,6 +44,35 @@ QVariantMap tagToMap(const TagEvent &t)
     m[QStringLiteral("pitchY")]       = t.pitchY;
     m[QStringLiteral("hasPitch")]     = t.hasPitch;
     return m;
+}
+
+// QImage (any format) -> BGR cv::Mat (deep copy).
+cv::Mat qimageToBgr(const QImage &img)
+{
+    if (img.isNull()) return {};
+    const QImage rgb = img.convertToFormat(QImage::Format_RGB888);
+    const cv::Mat view(rgb.height(), rgb.width(), CV_8UC3,
+                       const_cast<uchar *>(rgb.bits()),
+                       static_cast<size_t>(rgb.bytesPerLine()));
+    cv::Mat bgr;
+    cv::cvtColor(view, bgr, cv::COLOR_RGB2BGR);
+    return bgr;
+}
+
+// Turn an 8-bit 0/255 mask into a translucent tinted ARGB overlay that QML
+// can paint straight over the video (masked pixels tinted, rest transparent).
+QImage colorizeMask(const cv::Mat &mask, const QColor &tint, int alpha)
+{
+    if (mask.empty()) return {};
+    QImage out(mask.cols, mask.rows, QImage::Format_ARGB32);
+    const QRgb on = qRgba(tint.red(), tint.green(), tint.blue(), alpha);
+    for (int y = 0; y < mask.rows; ++y) {
+        const uchar *src = mask.ptr<uchar>(y);
+        QRgb *dst = reinterpret_cast<QRgb *>(out.scanLine(y));
+        for (int x = 0; x < mask.cols; ++x)
+            dst[x] = src[x] ? on : 0u;
+    }
+    return out;
 }
 
 TagEvent tagFromMap(const QVariantMap &m)
@@ -68,6 +101,7 @@ AppController::AppController(QObject *parent)
     m_frameProvider = new FrameProvider();
     m_engine2        = new VideoEngine(this);
     m_frameProvider2 = new FrameProvider();
+    m_maskProvider   = new FrameProvider();
     m_homeRoster    = new RosterModel(this);
     m_awayRoster    = new RosterModel(this);
     m_metadata      = new MatchMetadata(this);
@@ -706,6 +740,55 @@ bool AppController::saveProject()
     return true;
 }
 
+void AppController::deleteProject()
+{
+    if (!m_match->registered())
+        return;
+
+    // Stop any background work touching the files we are about to remove.
+    m_tracking->stopInference();
+    m_engine->stopProcessing();
+    if (m_shotWorker && m_shotWorker->isRunning()) { m_shotWorker->requestStop(); m_shotWorker->wait(3000); }
+    if (m_maskWorker && m_maskWorker->isRunning()) { m_maskWorker->requestStop(); m_maskWorker->wait(3000); }
+    if (m_homoWorker && m_homoWorker->isRunning()) { m_homoWorker->requestStop(); m_homoWorker->wait(3000); }
+    closeSecondary();
+
+    // Remove the per-video project folder (project.json, tags/tracks csv,
+    // shots.json, homography_dense.bin) captured before the path is cleared.
+    const QString pdir = projectDir();
+    if (!pdir.isEmpty()) {
+        QDir d(pdir);
+        if (d.exists())
+            d.removeRecursively();
+    }
+
+    // Remove the match artifacts + games.json entry and reset match state.
+    m_match->deleteProject();
+
+    // Return to the empty "open a video" state.
+    m_videoLoaded = false;
+    m_videoPath.clear();
+    m_videoName.clear();
+    m_playing = false;
+    m_currentFrame = 0;
+    m_positionSec = 0.0;
+    m_dirty = false;
+    m_lastFrame = QImage();
+    m_shots.clear();
+    m_pitchVisible = true;
+    m_homography->clearPropagation();
+    m_undoStack.clear();
+    m_redoStack.clear();
+
+    emit videoStateChanged();
+    emit playingChanged();
+    emit positionChanged();
+    emit dirtyChanged();
+    emit shotsChanged();
+    emit pitchVisibleChanged();
+    emit undoChanged();
+}
+
 QString AppController::denseTrackPath() const
 {
     const QString dir = projectDir();
@@ -743,6 +826,29 @@ void AppController::propagateHomography()
     QDir().mkpath(projectDir());
     const QString outPath = denseTrackPath();
 
+    // Per-frame player boxes (full-res px) over the keyframe span, from the
+    // loaded chunk detections, so the flow ignores moving players. Empty when
+    // no tracking data is loaded (the worker then tracks features everywhere).
+    QHash<int, QVector<QRect>> playerBoxes;
+    if (m_tracking->hasDetections() && m_fps > 0.0) {
+        const int f0 = kfs.first().frame, f1 = kfs.last().frame;
+        for (int f = f0; f <= f1; ++f) {
+            const QVariantList dets = m_tracking->detectionsAt(f / m_fps);
+            if (dets.isEmpty())
+                continue;
+            QVector<QRect> boxes;
+            boxes.reserve(dets.size());
+            for (const QVariant &v : dets) {
+                const QVariantMap m = v.toMap();
+                boxes.append(QRect(m.value(QStringLiteral("x")).toInt(),
+                                   m.value(QStringLiteral("y")).toInt(),
+                                   m.value(QStringLiteral("w")).toInt(),
+                                   m.value(QStringLiteral("h")).toInt()));
+            }
+            playerBoxes.insert(f, boxes);
+        }
+    }
+
     if (!m_homoWorker) {
         m_homoWorker = new HomographyWorker(this);
         connect(m_homoWorker, &HomographyWorker::progressChanged, this,
@@ -755,7 +861,8 @@ void AppController::propagateHomography()
 
     m_homography->clearPropagation();
     m_homography->setPropagating(true, QStringLiteral("Iniciando propagación…"));
-    m_homoWorker->configure(m_videoPath, wkfs, outPath);
+    m_homoWorker->configure(m_videoPath, wkfs, outPath, playerBoxes,
+                            m_homography->graphicsRects(), aggregatedStaticMask());
     m_homoWorker->start();
 }
 
@@ -903,6 +1010,233 @@ void AppController::cancelShotDetection()
 {
     if (m_shotWorker && m_shotWorker->isRunning())
         m_shotWorker->requestStop();
+}
+
+// ---- feature masks (Features tab) -----------------------------------------
+
+void AppController::publishMask(const QImage &overlay, const QString &info)
+{
+    if (overlay.isNull()) {
+        clearMaskPreview();
+        return;
+    }
+    m_maskProvider->setImage(overlay);
+    ++m_maskSerial;
+    m_maskShown = true;
+    m_maskInfo = info;
+    emit maskChanged();
+}
+
+void AppController::clearMaskPreview()
+{
+    if (!m_maskShown && m_maskInfo.isEmpty())
+        return;
+    m_maskProvider->setImage(QImage());
+    ++m_maskSerial;
+    m_maskShown = false;
+    m_maskInfo.clear();
+    emit maskChanged();
+}
+
+void AppController::previewGreenMask()
+{
+    if (!m_videoLoaded || m_lastFrame.isNull()) {
+        m_lastError = QStringLiteral("Abre un video antes de generar la máscara");
+        emit errorChanged();
+        return;
+    }
+    const cv::Mat bgr = qimageToBgr(m_lastFrame);
+    const cv::Mat mask = MaskGenerator::greenMask(bgr);
+    const double frac = mask.empty()
+        ? 0.0 : double(cv::countNonZero(mask)) / (mask.rows * mask.cols);
+    publishMask(colorizeMask(mask, QColor(0x30, 0xd9, 0x80), 120),
+                QStringLiteral("Césped · %1% del cuadro · frame %2")
+                    .arg(frac * 100.0, 0, 'f', 1).arg(m_currentFrame));
+}
+
+void AppController::showStaticMask(int chunkNumber)
+{
+    const QString dir = m_match->matchDir();
+    if (dir.isEmpty()) {
+        m_lastError = QStringLiteral("El video no pertenece a un proyecto");
+        emit errorChanged();
+        return;
+    }
+    const QString path = dir
+        + QStringLiteral("/static_mask/video_part_%1/mask.png")
+              .arg(chunkNumber, 3, 10, QLatin1Char('0'));
+    const cv::Mat mask = cv::imread(path.toStdString(), cv::IMREAD_GRAYSCALE);
+    if (mask.empty()) {
+        m_lastError = QStringLiteral("No hay máscara estática para la parte %1 "
+                                     "(genérala primero)").arg(chunkNumber);
+        emit errorChanged();
+        clearMaskPreview();
+        return;
+    }
+    const double frac = double(cv::countNonZero(mask)) / (mask.rows * mask.cols);
+    publishMask(colorizeMask(mask, QColor(0xe3, 0x54, 0x49), 130),
+                QStringLiteral("Estáticos · parte %1 · %2% del cuadro")
+                    .arg(chunkNumber).arg(frac * 100.0, 0, 'f', 1));
+}
+
+void AppController::showStaticUnion()
+{
+    const QString dir = m_match->matchDir();
+    cv::Mat u = dir.isEmpty() ? cv::Mat()
+        : MaskGenerator::unionStaticMasks(dir + QStringLiteral("/static_mask"),
+                                          m_homography->staticVoteFrac());
+
+    // Canvas: the union's size if we have one, else the video frame size.
+    const cv::Size sz = u.empty()
+        ? cv::Size(std::max(1, m_videoWidth), std::max(1, m_videoHeight))
+        : u.size();
+    cv::Mat combined = u.empty() ? cv::Mat::zeros(sz, CV_8U) : u.clone();
+
+    // OR in the manual logo boxes — exactly what the worker also excludes
+    // (graphicsRects()), so the preview matches the real RANSAC exclusion.
+    const QVector<QRectF> &g = m_homography->graphicsRects();
+    for (const QRectF &r : g) {
+        cv::Rect s(cvRound(r.x() * sz.width), cvRound(r.y() * sz.height),
+                   cvRound(r.width() * sz.width), cvRound(r.height() * sz.height));
+        s &= cv::Rect(0, 0, sz.width, sz.height);
+        if (s.area() > 0) combined(s).setTo(255);
+    }
+
+    if (cv::countNonZero(combined) == 0) {
+        m_lastError = QStringLiteral("No hay máscara estática ni cajas manuales todavía");
+        emit errorChanged();
+        clearMaskPreview();
+        return;
+    }
+    const double frac = double(cv::countNonZero(combined)) / (combined.rows * combined.cols);
+    publishMask(colorizeMask(combined, QColor(0xe3, 0x54, 0x49), 130),
+                QStringLiteral("Combinada · %1% · %2 caja(s) · voto %3")
+                    .arg(frac * 100.0, 0, 'f', 1).arg(g.size())
+                    .arg(m_homography->staticVoteFrac(), 0, 'f', 2));
+}
+
+void AppController::startMaskGen(int kind)
+{
+    if (m_maskWorker && m_maskWorker->isRunning())
+        return;
+    if (!m_videoLoaded) {
+        m_lastError = QStringLiteral("Abre un video antes de generar máscaras");
+        emit errorChanged();
+        return;
+    }
+    const QString chunksDir = m_match->chunksDir();
+    const QString matchDir = m_match->matchDir();
+    if (matchDir.isEmpty() || m_match->chunkCount() <= 0
+        || !QDir(chunksDir).exists()) {
+        m_lastError = QStringLiteral("Crea los chunks primero (pestaña Chunks)");
+        emit errorChanged();
+        return;
+    }
+
+    if (!m_maskWorker) {
+        m_maskWorker = new MaskGenerator(this);
+        connect(m_maskWorker, &MaskGenerator::progressChanged, this,
+                [this](double frac, const QString &label) {
+                    m_maskGenProgress = frac;
+                    m_maskGenLabel = label;
+                    emit maskGenChanged();
+                });
+        connect(m_maskWorker, &MaskGenerator::finished, this,
+                &AppController::onMaskGenFinished);
+    }
+    m_maskWorker->configure(
+        kind == 0 ? MaskGenerator::Kind::Green : MaskGenerator::Kind::Static,
+        chunksDir, {}, matchDir);
+
+    m_maskGenRunning = true;
+    m_maskGenProgress = 0.0;
+    m_maskGenKind = (kind == 0) ? QStringLiteral("green") : QStringLiteral("static");
+    m_maskGenLabel = QStringLiteral("Iniciando…");
+    emit maskGenChanged();
+    m_maskWorker->start();
+}
+
+void AppController::generateGreenMasks()  { startMaskGen(0); }
+void AppController::generateStaticMasks() { startMaskGen(1); }
+
+void AppController::cancelMaskGen()
+{
+    if (m_maskWorker && m_maskWorker->isRunning())
+        m_maskWorker->requestStop();
+}
+
+void AppController::onMaskGenFinished(bool ok, const QString &error, int written)
+{
+    m_maskGenRunning = false;
+    m_maskGenLabel = ok
+        ? QStringLiteral("Listo · %1 %2").arg(written)
+              .arg(m_maskGenKind == QLatin1String("green")
+                       ? QStringLiteral("máscaras") : QStringLiteral("partes"))
+        : error;
+    emit maskGenChanged();
+    if (!ok && !error.isEmpty() && error != QStringLiteral("Cancelado")) {
+        m_lastError = error;
+        emit errorChanged();
+    }
+}
+
+QVariantMap AppController::maskSummary() const
+{
+    QVariantMap m;
+    const QString dir = m_match->matchDir();
+    const int chunks = m_match->chunkCount();
+    m[QStringLiteral("chunks")] = chunks;
+    int greenChunks = 0, staticChunks = 0, greenFrames = 0;
+    if (!dir.isEmpty()) {
+        const QDir gm(dir + QStringLiteral("/green_mask"));
+        if (gm.exists()) {
+            const QStringList parts = gm.entryList({QStringLiteral("video_part_*")},
+                                                   QDir::Dirs | QDir::NoDotAndDotDot);
+            greenChunks = parts.size();
+            for (const QString &p : parts)
+                greenFrames += QDir(gm.filePath(p))
+                                   .entryList({QStringLiteral("frame_*.png")}, QDir::Files)
+                                   .size();
+        }
+        const QDir sm(dir + QStringLiteral("/static_mask"));
+        if (sm.exists())
+            staticChunks = sm.entryList({QStringLiteral("video_part_*")},
+                                        QDir::Dirs | QDir::NoDotAndDotDot).size();
+    }
+    m[QStringLiteral("greenChunks")]  = greenChunks;
+    m[QStringLiteral("staticChunks")] = staticChunks;
+    m[QStringLiteral("greenFrames")]  = greenFrames;
+    return m;
+}
+
+QImage AppController::aggregatedStaticMask() const
+{
+    const QString dir = m_match->matchDir();
+    if (dir.isEmpty())
+        return {};
+    const cv::Mat out = MaskGenerator::unionStaticMasks(
+        dir + QStringLiteral("/static_mask"), m_homography->staticVoteFrac());
+    if (out.empty())
+        return {};
+    QImage img(out.cols, out.rows, QImage::Format_Grayscale8);
+    for (int y = 0; y < out.rows; ++y)
+        memcpy(img.scanLine(y), out.ptr<uchar>(y), static_cast<size_t>(out.cols));
+    return img;
+}
+
+QString AppController::solverBackend() const
+{
+    return QString::fromLatin1(homog::backendName(homog::Backend::Default));
+}
+
+void AppController::setSolverBackend(const QString &name)
+{
+    const homog::Backend b = (name == QLatin1String("custom"))
+        ? homog::Backend::Custom : homog::Backend::OpenCV;
+    if (homog::defaultBackend() == b)
+        return;
+    homog::setDefaultBackend(b);
+    emit solverBackendChanged();
 }
 
 void AppController::onShotDetectFinished(bool ok, const QString &error, int shotCount)

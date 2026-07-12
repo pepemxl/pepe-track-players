@@ -12,7 +12,7 @@ ApplicationWindow {
     title: "PepeTrack — Football Tracker"
     color: Theme.bg
 
-    // 0 video, 1 homography, 2 metadata, 3 tracking, 4 sync, 5 chunks
+    // 0 video, 1 homography, 2 metadata, 3 tracking, 4 sync, 5 chunks, 6 features
     property int activeTab: 0
 
     FileDialog {
@@ -84,7 +84,11 @@ ApplicationWindow {
     component StackLayout_: Item {
         VideoView      { anchors.fill: parent; visible: root.activeTab === 0 }
         HomographyView { anchors.fill: parent; visible: root.activeTab === 1 }
-        MetadataView   { anchors.fill: parent; visible: root.activeTab === 2 }
+        MetadataView {
+            anchors.fill: parent
+            visible: root.activeTab === 2
+            onRequestVideoTab: root.activeTab = 0
+        }
         TrackingView   { anchors.fill: parent; visible: root.activeTab === 3 }
         SyncView       { anchors.fill: parent; visible: root.activeTab === 4 }
         ChunksView {
@@ -92,5 +96,6 @@ ApplicationWindow {
             visible: root.activeTab === 5
             onOpenVideoTab: root.activeTab = 0
         }
+        FeaturesView   { anchors.fill: parent; visible: root.activeTab === 6 }
     }
 }

@@ -19,6 +19,7 @@ class TrackingManager;
 class TracksModel;
 class MatchManager;
 class HomographyWorker;
+class MaskGenerator;
 
 // Facade the QML layer talks to. Owns the video worker, the models and
 // the managers; forwards frames into the image provider.
@@ -51,6 +52,21 @@ class AppController : public QObject
     Q_PROPERTY(double shotProgress READ shotProgress NOTIFY shotStateChanged)
     Q_PROPERTY(QString shotLabel READ shotLabel NOTIFY shotStateChanged)
 
+    // Homography estimator backend: "opencv" (cv::findHomography) or "custom"
+    // (our own RANSAC). Configurable at runtime; also via PEPE_HOMOG_BACKEND.
+    Q_PROPERTY(QString solverBackend READ solverBackend WRITE setSolverBackend NOTIFY solverBackendChanged)
+
+    // Feature masks (Features tab): grass / static-graphic masks that guide
+    // the homography flow and RANSAC. maskSerial busts the overlay Image
+    // cache; maskShown is true while a preview mask is loaded.
+    Q_PROPERTY(int maskSerial READ maskSerial NOTIFY maskChanged)
+    Q_PROPERTY(bool maskShown READ maskShown NOTIFY maskChanged)
+    Q_PROPERTY(QString maskInfo READ maskInfo NOTIFY maskChanged)
+    Q_PROPERTY(bool maskGenRunning READ maskGenRunning NOTIFY maskGenChanged)
+    Q_PROPERTY(double maskGenProgress READ maskGenProgress NOTIFY maskGenChanged)
+    Q_PROPERTY(QString maskGenLabel READ maskGenLabel NOTIFY maskGenChanged)
+    Q_PROPERTY(QString maskGenKind READ maskGenKind NOTIFY maskGenChanged)
+
     Q_PROPERTY(QObject *metadata READ metadataObj CONSTANT)
     Q_PROPERTY(QObject *homeRoster READ homeRosterObj CONSTANT)
     Q_PROPERTY(QObject *awayRoster READ awayRosterObj CONSTANT)
@@ -78,6 +94,7 @@ public:
 
     FrameProvider *frameProvider() const { return m_frameProvider; }
     FrameProvider *frameProvider2() const { return m_frameProvider2; }
+    FrameProvider *maskProvider() const { return m_maskProvider; }
 
     bool secLoaded() const { return m_secLoaded; }
     QString secVideoName() const { return m_secVideoName; }
@@ -158,6 +175,10 @@ public:
 
     Q_INVOKABLE bool saveProject();
 
+    // Deletes the current project (artifacts + games.json entry) and returns
+    // the app to the empty "open a video" state.
+    Q_INVOKABLE void deleteProject();
+
     // Phase F2: run the inter-frame optical-flow propagation over the manual
     // keyframes and load the resulting dense per-frame homography track.
     Q_INVOKABLE void propagateHomography();
@@ -177,8 +198,37 @@ public:
     QString shotLabel() const { return m_shotLabel; }
     Q_INVOKABLE void detectShots();
     Q_INVOKABLE void cancelShotDetection();
+
+    QString solverBackend() const;
+    void setSolverBackend(const QString &name);
     // Shots for the timeline: [{start,end,pitch,grass}] in frames.
     Q_INVOKABLE QVariantList shots() const;
+
+    // ---- Feature masks (Features tab) -------------------------------------
+    int maskSerial() const { return m_maskSerial; }
+    bool maskShown() const { return m_maskShown; }
+    QString maskInfo() const { return m_maskInfo; }
+    bool maskGenRunning() const { return m_maskGenRunning; }
+    double maskGenProgress() const { return m_maskGenProgress; }
+    QString maskGenLabel() const { return m_maskGenLabel; }
+    QString maskGenKind() const { return m_maskGenKind; }
+
+    // Live preview of the grass mask for the current frame.
+    Q_INVOKABLE void previewGreenMask();
+    // Load and show a previously generated static-graphic mask for a chunk.
+    Q_INVOKABLE void showStaticMask(int chunkNumber);
+    // Show the combined RANSAC-exclusion mask (majority-vote union of the
+    // per-chunk static masks OR the manual logo boxes) at the current voteFrac.
+    Q_INVOKABLE void showStaticUnion();
+    Q_INVOKABLE void clearMaskPreview();
+
+    // Batch generation over the current video's chunks.
+    Q_INVOKABLE void generateGreenMasks();
+    Q_INVOKABLE void generateStaticMasks();
+    Q_INVOKABLE void cancelMaskGen();
+
+    // {chunks, greenChunks, staticChunks, greenFrames} for the UI summary.
+    Q_INVOKABLE QVariantMap maskSummary() const;
 
 signals:
     void videoStateChanged();
@@ -196,6 +246,9 @@ signals:
     void shotsChanged();
     void shotStateChanged();
     void pitchVisibleChanged();
+    void solverBackendChanged();
+    void maskChanged();
+    void maskGenChanged();
 
 private:
     void onFrameReady(const QImage &frame, int frameIndex, double posSec);
@@ -217,10 +270,18 @@ private:
     bool pitchVisibleAt(int frame) const;
     void updatePitchVisible();
 
+    void startMaskGen(int kind);   // 0 = green, 1 = static
+    void onMaskGenFinished(bool ok, const QString &error, int written);
+    void publishMask(const class QImage &overlay, const QString &info);
+    // Screen-space union of the per-chunk static-graphic masks (majority vote),
+    // for excluding burnt-in graphics from the propagation flow. Null if none.
+    QImage aggregatedStaticMask() const;
+
     VideoEngine       *m_engine{nullptr};
     FrameProvider     *m_frameProvider{nullptr};   // owned by the QML engine
     VideoEngine       *m_engine2{nullptr};
     FrameProvider     *m_frameProvider2{nullptr};  // owned by the QML engine
+    FrameProvider     *m_maskProvider{nullptr};    // owned by the QML engine
     RosterModel       *m_homeRoster{nullptr};
     RosterModel       *m_awayRoster{nullptr};
     MatchMetadata     *m_metadata{nullptr};
@@ -231,6 +292,7 @@ private:
     MatchManager      *m_match{nullptr};
     HomographyWorker  *m_homoWorker{nullptr};
     ShotDetector      *m_shotWorker{nullptr};
+    MaskGenerator     *m_maskWorker{nullptr};
 
     bool    m_videoLoaded{false};
     QString m_videoPath;
@@ -257,6 +319,14 @@ private:
     bool    m_shotDetecting{false};
     double  m_shotProgress{0.0};
     QString m_shotLabel;
+
+    int     m_maskSerial{0};
+    bool    m_maskShown{false};
+    QString m_maskInfo;
+    bool    m_maskGenRunning{false};
+    double  m_maskGenProgress{0.0};
+    QString m_maskGenLabel;
+    QString m_maskGenKind;
 
     bool    m_secLoaded{false};
     QString m_secVideoName;

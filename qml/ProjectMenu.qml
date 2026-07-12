@@ -119,9 +119,9 @@ Popup {
                     }
                     Text {
                         width: 230
-                        text: firstVideo
-                            ? firstVideo.path.split("/").pop()
-                            : "(empty)"
+                        text: modelData.name && modelData.name.length
+                            ? modelData.name
+                            : (firstVideo ? firstVideo.path.split("/").pop() : "(empty)")
                         elide: Text.ElideMiddle
                         color: Theme.text
                         font { family: Theme.fontUi; pixelSize: 12 }

@@ -166,5 +166,33 @@ Rectangle {
                 }
             }
         }
+
+        NavItem {
+            id: featNav
+            label: "Features"
+            active: nav.activeTab === 6
+            onClicked: nav.tabSelected(6)
+            iconItem: Canvas {
+                anchors.fill: parent
+                property color c: featNav.iconColor
+                onCChanged: requestPaint()
+                onPaint: {
+                    const ctx = getContext("2d")
+                    ctx.reset()
+                    ctx.strokeStyle = c
+                    ctx.lineWidth = 1.6
+                    // layered masks: a filled blob under an outlined one
+                    ctx.beginPath()
+                    ctx.roundedRect(2, 6, 12, 12, 3, 3)
+                    ctx.fillStyle = c
+                    ctx.globalAlpha = 0.35
+                    ctx.fill()
+                    ctx.globalAlpha = 1
+                    ctx.beginPath()
+                    ctx.roundedRect(7, 2, 12, 12, 3, 3)
+                    ctx.stroke()
+                }
+            }
+        }
     }
 }

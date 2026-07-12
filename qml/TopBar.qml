@@ -54,6 +54,7 @@ Rectangle {
         Rectangle { width: 1; height: 22; color: Theme.border; anchors.verticalCenter: parent.verticalCenter }
 
         Text {
+            visible: App.videoLoaded
             text: App.metadata.homeTeam + " vs " + App.metadata.awayTeam + " · " + App.metadata.competition
             color: Theme.textMuted
             font { family: Theme.fontMono; pixelSize: 13 }
@@ -85,7 +86,10 @@ Rectangle {
             Text {
                 id: projectLabel
                 text: App.match.registered
-                    ? "Project #" + App.match.matchId + " ▾" : "Project ▾"
+                    ? (App.match.matchName.length
+                        ? App.match.matchName + " ▾"
+                        : "Project #" + App.match.matchId + " ▾")
+                    : "Project ▾"
                 color: Theme.textBright
                 font { family: Theme.fontUi; pixelSize: 12; weight: Font.DemiBold }
                 anchors.centerIn: parent

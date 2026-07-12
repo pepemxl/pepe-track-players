@@ -24,6 +24,15 @@ Item {
         }
     }
 
+    // Leave crop mode when the video is unloaded (e.g. project deleted).
+    Connections {
+        target: App
+        function onVideoStateChanged() {
+            if (!App.videoLoaded)
+                view.cropStep = 0
+        }
+    }
+
     Row {
         anchors.fill: parent
 
@@ -276,7 +285,7 @@ Item {
 
                     // Crop-mode hint (bottom-left, like homography)
                     Rectangle {
-                        visible: view.cropStep > 0
+                        visible: view.cropStep > 0 && App.videoLoaded
                         z: 3
                         anchors.bottom: parent.bottom
                         anchors.left: parent.left
