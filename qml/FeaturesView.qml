@@ -34,26 +34,48 @@ Item {
         }
     }
 
-    // When the grass preview is active it re-computes on every frame so the
-    // mask follows the picture as you step / play through the video.
+    // Overlay follow modes (mutually exclusive):
+    //  greenFollow — live-computed grass mask for the current frame.
+    //  chunkFollow — precalculated masks (grass + static) loaded from disk for
+    //                the chunk/frame being viewed.
     property bool greenFollow: false
+    property bool chunkFollow: false
+
+    // Kind ("green"/"static") of a pending overwrite awaiting confirmation.
+    property string pendingGenKind: ""
+    function confirmOverwrite(kind) { pendingGenKind = kind; overwriteDialog.open() }
 
     function refresh() { summary = App.maskSummary() }
 
-    // Pause playback when the tab is opened so the first frame is stable
-    // (use the transport below to step or play through it).
-    onVisibleChanged: if (visible && App.playing) App.pause()
+    // Re-apply the active follow mode for the current frame. Only while paused:
+    // recomputing / reloading every frame during playback would stutter, so we
+    // skip during play and refresh once when playback stops.
+    function refreshFollow() {
+        if (App.playing || !App.videoLoaded) return
+        if (chunkFollow) App.showChunkMasks()
+        else if (greenFollow) App.previewGreenMask()
+    }
+
+    // Opening the tab pauses playback (stable frame) and auto-loads the
+    // precalculated masks for the chunk being viewed, if any exist on disk.
+    onVisibleChanged: {
+        if (!visible) return
+        refresh()
+        if (App.playing) App.pause()
+        if (!greenFollow && !chunkFollow
+                && (summary.greenChunks > 0 || summary.staticChunks > 0)) {
+            chunkFollow = true
+            App.showChunkMasks()
+        }
+    }
 
     Component.onCompleted: refresh()
     Connections {
         target: App
         function onMaskGenChanged() { if (!App.maskGenRunning) view.refresh() }
         function onVideoStateChanged() { view.refresh() }
-        // Keep the grass overlay in sync with the currently displayed frame.
-        function onFrameSerialChanged() {
-            if (view.greenFollow && App.videoLoaded)
-                App.previewGreenMask()
-        }
+        function onFrameSerialChanged() { view.refreshFollow() }
+        function onPlayingChanged() { view.refreshFollow() }
     }
 
     Row {
@@ -425,6 +447,31 @@ Item {
                         font { family: Theme.fontUi; pixelSize: 12 }
                     }
 
+                    // Show the precalculated masks for the chunk being viewed.
+                    FeatureButton {
+                        width: parent.width
+                        label: view.chunkFollow ? "Precalc masks — following"
+                                                : "Show precalc masks (this chunk)"
+                        filled: view.chunkFollow
+                        accent: Theme.green
+                        enabled: App.videoLoaded && (view.summary.greenChunks > 0
+                                                     || view.summary.staticChunks > 0)
+                        onClicked: {
+                            view.greenFollow = false
+                            view.chunkFollow = true
+                            App.showChunkMasks()
+                        }
+                    }
+                    Text {
+                        visible: App.videoLoaded && view.summary.greenChunks === 0
+                                 && view.summary.staticChunks === 0
+                        width: parent.width
+                        wrapMode: Text.WordWrap
+                        text: "No precalculated masks yet — generate them below."
+                        color: Theme.textDim
+                        font { family: Theme.fontUi; pixelSize: 11 }
+                    }
+
                     // ---- progress (shared) ----
                     Rectangle {
                         visible: App.maskGenRunning || App.maskGenLabel.length > 0
@@ -505,8 +552,8 @@ Item {
 
                         FeatureButton {
                             width: parent.width
-                            label: view.greenFollow ? "Following frame — stop"
-                                                    : "Preview (follows frame)"
+                            label: view.greenFollow ? "Live grass — stop"
+                                                    : "Live grass (recompute)"
                             accent: Theme.green
                             filled: view.greenFollow
                             enabled: App.videoLoaded && !App.maskGenRunning
@@ -516,6 +563,7 @@ Item {
                                     App.clearMaskPreview()
                                 } else {
                                     view.greenFollow = true
+                                    view.chunkFollow = false
                                     App.previewGreenMask()
                                 }
                             }
@@ -527,7 +575,12 @@ Item {
                             filled: true
                             accent: Theme.green
                             enabled: App.videoLoaded && !App.maskGenRunning && view.summary.chunks > 0
-                            onClicked: App.generateGreenMasks()
+                            onClicked: {
+                                if (view.summary.greenChunks > 0)
+                                    view.confirmOverwrite("green")
+                                else
+                                    App.generateGreenMasks()
+                            }
                         }
                         Text {
                             visible: view.summary.chunks === 0
@@ -575,7 +628,12 @@ Item {
                             filled: true
                             accent: Theme.red
                             enabled: App.videoLoaded && !App.maskGenRunning && view.summary.chunks > 0
-                            onClicked: App.generateStaticMasks()
+                            onClicked: {
+                                if (view.summary.staticChunks > 0)
+                                    view.confirmOverwrite("static")
+                                else
+                                    App.generateStaticMasks()
+                            }
                         }
 
                         // Chunk picker + show.
@@ -620,7 +678,7 @@ Item {
                                 label: "Show"
                                 accent: Theme.red
                                 anchors.verticalCenter: parent.verticalCenter
-                                onClicked: { view.greenFollow = false; App.showStaticMask(view.staticChunk) }
+                                onClicked: { view.greenFollow = false; view.chunkFollow = false; App.showStaticMask(view.staticChunk) }
                             }
                         }
 
@@ -668,7 +726,7 @@ Item {
                             label: "Show combined RANSAC mask"
                             accent: Theme.red
                             enabled: App.videoLoaded
-                            onClicked: { view.greenFollow = false; App.showStaticUnion() }
+                            onClicked: { view.greenFollow = false; view.chunkFollow = false; App.showStaticUnion() }
                         }
                     }
 
@@ -730,7 +788,87 @@ Item {
                         width: parent.width
                         label: "Hide / clear overlay"
                         enabled: App.maskShown
-                        onClicked: { view.greenFollow = false; App.clearMaskPreview() }
+                        onClicked: { view.greenFollow = false; view.chunkFollow = false; App.clearMaskPreview() }
+                    }
+                }
+            }
+        }
+    }
+
+    // ---- overwrite confirmation (regenerating existing masks) ----
+    Dialog {
+        id: overwriteDialog
+        modal: true
+        anchors.centerIn: Overlay.overlay
+        width: 460
+        padding: 0
+        closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutside
+
+        readonly property bool green: view.pendingGenKind === "green"
+
+        background: Rectangle {
+            color: Theme.surface; radius: 12
+            border.color: Theme.border; border.width: 1
+        }
+
+        contentItem: Column {
+            spacing: 0
+            Text {
+                width: parent.width; padding: 22; bottomPadding: 10
+                text: "Overwrite existing masks?"
+                color: Theme.text
+                font { family: Theme.fontUi; pixelSize: 16; weight: Font.Bold }
+            }
+            Text {
+                width: parent.width
+                leftPadding: 22; rightPadding: 22; bottomPadding: 20
+                wrapMode: Text.WordWrap
+                text: {
+                    if (overwriteDialog.green)
+                        return "This regenerates the grass masks and overwrites the "
+                            + view.summary.greenFrames + " existing frame mask(s) across "
+                            + view.summary.greenChunks + " chunk(s). Continue?"
+                    return "This regenerates the static-graphic masks and overwrites the "
+                        + view.summary.staticChunks + " existing chunk mask(s). Continue?"
+                }
+                color: Theme.textMuted
+                font { family: Theme.fontUi; pixelSize: 13 }
+            }
+            Rectangle { width: parent.width; height: 1; color: Theme.border }
+            Row {
+                width: parent.width
+                layoutDirection: Qt.RightToLeft
+                padding: 16; spacing: 10
+                Rectangle {
+                    width: owText.implicitWidth + 32; height: 38; radius: 8
+                    color: overwriteDialog.green ? Theme.green : Theme.red
+                    Text {
+                        id: owText; anchors.centerIn: parent
+                        text: "Overwrite"
+                        color: overwriteDialog.green ? "#10231a" : "white"
+                        font { family: Theme.fontUi; pixelSize: 13; weight: Font.Bold }
+                    }
+                    MouseArea {
+                        anchors.fill: parent; cursorShape: Qt.PointingHandCursor
+                        onClicked: {
+                            overwriteDialog.close()
+                            if (overwriteDialog.green) App.generateGreenMasks()
+                            else App.generateStaticMasks()
+                        }
+                    }
+                }
+                Rectangle {
+                    width: owCancel.implicitWidth + 32; height: 38; radius: 8
+                    color: Theme.surfaceHi
+                    border.color: Theme.border2; border.width: 1
+                    Text {
+                        id: owCancel; anchors.centerIn: parent
+                        text: "Cancel"; color: Theme.text
+                        font { family: Theme.fontUi; pixelSize: 13; weight: Font.DemiBold }
+                    }
+                    MouseArea {
+                        anchors.fill: parent; cursorShape: Qt.PointingHandCursor
+                        onClicked: overwriteDialog.close()
                     }
                 }
             }

@@ -1115,6 +1115,85 @@ void AppController::showStaticUnion()
                     .arg(m_homography->staticVoteFrac(), 0, 'f', 2));
 }
 
+void AppController::chunkFrameAtCurrent(int &chunk, int &frameInChunk) const
+{
+    // Same mapping the tracking data uses: 10 fps global slots, 600 per chunk.
+    const int slot = qMax(0, qRound(m_positionSec * 10.0));
+    chunk = slot / 600 + 1;
+    frameInChunk = slot % 600;
+}
+
+QString AppController::greenMaskPath(int chunk, int frameInChunk) const
+{
+    const QString dir = m_match->matchDir();
+    if (dir.isEmpty())
+        return {};
+    return dir + QStringLiteral("/green_mask/video_part_%1/frame_%2.png")
+                     .arg(chunk, 3, 10, QLatin1Char('0'))
+                     .arg(frameInChunk, 5, 10, QLatin1Char('0'));
+}
+
+QString AppController::staticMaskPath(int chunk) const
+{
+    const QString dir = m_match->matchDir();
+    if (dir.isEmpty())
+        return {};
+    return dir + QStringLiteral("/static_mask/video_part_%1/mask.png")
+                     .arg(chunk, 3, 10, QLatin1Char('0'));
+}
+
+bool AppController::hasChunkMasksAtCurrent() const
+{
+    int chunk = 0, f = 0;
+    chunkFrameAtCurrent(chunk, f);
+    return QFile::exists(greenMaskPath(chunk, f)) || QFile::exists(staticMaskPath(chunk));
+}
+
+bool AppController::showChunkMasks()
+{
+    int chunk = 0, f = 0;
+    chunkFrameAtCurrent(chunk, f);
+
+    cv::Mat green = cv::imread(greenMaskPath(chunk, f).toStdString(), cv::IMREAD_GRAYSCALE);
+    cv::Mat stat  = cv::imread(staticMaskPath(chunk).toStdString(), cv::IMREAD_GRAYSCALE);
+    if (green.empty() && stat.empty()) {
+        clearMaskPreview();
+        return false;
+    }
+
+    // Canvas from whichever mask we have; align the other to it.
+    const cv::Size sz = !green.empty() ? green.size() : stat.size();
+    if (!stat.empty() && stat.size() != sz)
+        cv::resize(stat, stat, sz, 0, 0, cv::INTER_NEAREST);
+    if (!green.empty() && green.size() != sz)
+        cv::resize(green, green, sz, 0, 0, cv::INTER_NEAREST);
+
+    // Combined tinted overlay: grass green, static graphics red (graphics win
+    // on overlap so the excluded regions stand out).
+    QImage overlay(sz.width, sz.height, QImage::Format_ARGB32);
+    const QRgb cg = qRgba(0x30, 0xd9, 0x80, 110);
+    const QRgb cr = qRgba(0xe3, 0x54, 0x49, 140);
+    int gN = 0, sN = 0;
+    for (int y = 0; y < sz.height; ++y) {
+        const uchar *gp = green.empty() ? nullptr : green.ptr<uchar>(y);
+        const uchar *sp = stat.empty() ? nullptr : stat.ptr<uchar>(y);
+        QRgb *dst = reinterpret_cast<QRgb *>(overlay.scanLine(y));
+        for (int x = 0; x < sz.width; ++x) {
+            if (sp && sp[x]) { dst[x] = cr; ++sN; }
+            else if (gp && gp[x]) { dst[x] = cg; ++gN; }
+            else dst[x] = 0u;
+        }
+    }
+    const double area = double(sz.width) * sz.height;
+    QString info = QStringLiteral("Precalc · parte %1 · frame %2 · césped %3%")
+                       .arg(chunk).arg(f)
+                       .arg(area > 0 ? gN / area * 100.0 : 0.0, 0, 'f', 1);
+    if (sN > 0)
+        info += QStringLiteral(" · gráficos %1%").arg(sN / area * 100.0, 0, 'f', 1);
+    publishMask(overlay, info);
+    return true;
+}
+
 void AppController::startMaskGen(int kind)
 {
     if (m_maskWorker && m_maskWorker->isRunning())

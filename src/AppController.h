@@ -220,6 +220,13 @@ public:
     // Show the combined RANSAC-exclusion mask (majority-vote union of the
     // per-chunk static masks OR the manual logo boxes) at the current voteFrac.
     Q_INVOKABLE void showStaticUnion();
+    // Load the precalculated masks (grass for the current frame + static for the
+    // current chunk) that were persisted to disk and overlay them. Maps the
+    // current playback position to a chunk/frame like the tracking data does.
+    // Returns true if any saved mask was found and shown.
+    Q_INVOKABLE bool showChunkMasks();
+    // Are there any precalculated masks on disk for the current chunk/frame?
+    Q_INVOKABLE bool hasChunkMasksAtCurrent() const;
     Q_INVOKABLE void clearMaskPreview();
 
     // Batch generation over the current video's chunks.
@@ -273,6 +280,11 @@ private:
     void startMaskGen(int kind);   // 0 = green, 1 = static
     void onMaskGenFinished(bool ok, const QString &error, int written);
     void publishMask(const class QImage &overlay, const QString &info);
+    // Maps the current playback second to the chunk number and the frame index
+    // within that chunk (10 fps chunks of 600 frames), as the tracking uses.
+    void chunkFrameAtCurrent(int &chunk, int &frameInChunk) const;
+    QString greenMaskPath(int chunk, int frameInChunk) const;
+    QString staticMaskPath(int chunk) const;
     // Screen-space union of the per-chunk static-graphic masks (majority vote),
     // for excluding burnt-in graphics from the propagation flow. Null if none.
     QImage aggregatedStaticMask() const;
