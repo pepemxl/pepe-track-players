@@ -12,6 +12,12 @@ namespace {
 constexpr double kPitchW = 105.0;
 constexpr double kPitchH = 68.0;
 
+// Reassigning a landmark commits to the governing keyframe when the current
+// frame is within this many frames of it (covers imprecise seeks / stepper
+// nudges). Farther away the edit belongs to a new keyframe and is committed by
+// the next Recompute, so it must not overwrite a distant existing keyframe.
+constexpr int kPitchEditWindowFrames = 8;
+
 struct Landmark { const char *key; const char *label; double px; double py; };
 
 // Standard landmarks on a 105 x 68 m pitch (origin top-left; x along the
@@ -28,8 +34,10 @@ const std::vector<Landmark> &landmarkCatalog()
         { "half_top", "Halfway × top touchline",    52.5, 0.0 },
         { "half_bot", "Halfway × bottom touchline", 52.5, 68.0 },
         { "center",   "Centre spot",            52.5, 34.0 },
-        { "circ_top", "Centre circle top",      52.5, 24.85 },
-        { "circ_bot", "Centre circle bottom",   52.5, 43.15 },
+        { "circ_top",   "Centre circle top",     52.5,  24.85 },
+        { "circ_bot",   "Centre circle bottom",  52.5,  43.15 },
+        { "circ_left",  "Centre circle left",    43.35, 34.0 },
+        { "circ_right", "Centre circle right",   61.65, 34.0 },
         { "lpen", "Left penalty spot",  11.0, 34.0 },
         { "rpen", "Right penalty spot", 94.0, 34.0 },
         { "lpa_tl", "L penalty-area ↖ (goal line)", 0.0,  13.84 },
@@ -40,6 +48,11 @@ const std::vector<Landmark> &landmarkCatalog()
         { "rpa_tl", "R penalty-area top (18-yd)",        88.5,  13.84 },
         { "rpa_bl", "R penalty-area bottom (18-yd)",     88.5,  54.16 },
         { "rpa_br", "R penalty-area ↘ (goal line)", 105.0, 54.16 },
+        // Penalty-area front line (18-yd) extended to the touchlines.
+        { "lpa_front_top", "L box front × top touchline",    16.5, 0.0 },
+        { "lpa_front_bot", "L box front × bottom touchline", 16.5, 68.0 },
+        { "rpa_front_top", "R box front × top touchline",    88.5, 0.0 },
+        { "rpa_front_bot", "R box front × bottom touchline", 88.5, 68.0 },
         { "lga_tl", "L goal-area ↖ (goal line)", 0.0, 24.84 },
         { "lga_tr", "L goal-area top (6-yd)",         5.5, 24.84 },
         { "lga_br", "L goal-area bottom (6-yd)",      5.5, 43.16 },
@@ -61,6 +74,51 @@ QString landmarkLabelFor(double px, double py)
     }
     return QStringLiteral("custom (%1, %2)")
         .arg(px, 0, 'f', 1).arg(py, 0, 'f', 1);
+}
+
+// The standard pitch drawing as a set of polylines in meters (105 x 68).
+// Straight lines are two points; the centre circle and penalty arcs are
+// sampled so they project as proper conics under the homography.
+const std::vector<std::vector<cv::Point2d>> &pitchModelPolylines()
+{
+    static const std::vector<std::vector<cv::Point2d>> k = [] {
+        std::vector<std::vector<cv::Point2d>> m;
+        // Outer boundary + halfway line.
+        m.push_back({ {0,0}, {105,0}, {105,68}, {0,68}, {0,0} });
+        m.push_back({ {52.5,0}, {52.5,68} });
+        // Penalty areas.
+        m.push_back({ {0,13.84}, {16.5,13.84}, {16.5,54.16}, {0,54.16} });
+        m.push_back({ {105,13.84}, {88.5,13.84}, {88.5,54.16}, {105,54.16} });
+        // Goal areas.
+        m.push_back({ {0,24.84}, {5.5,24.84}, {5.5,43.16}, {0,43.16} });
+        m.push_back({ {105,24.84}, {99.5,24.84}, {99.5,43.16}, {105,43.16} });
+        // Centre circle (r = 9.15 about 52.5,34).
+        {
+            std::vector<cv::Point2d> c;
+            const int n = 96;
+            for (int i = 0; i <= n; ++i) {
+                const double a = 2.0 * M_PI * i / n;
+                c.push_back({ 52.5 + 9.15 * std::cos(a), 34.0 + 9.15 * std::sin(a) });
+            }
+            m.push_back(std::move(c));
+        }
+        // Penalty arcs (the "D"): the part of the r=9.15 circle about each
+        // penalty spot that lies outside the box (half-angle acos(5.5/9.15)).
+        const double half = std::acos(5.5 / 9.15);
+        auto arc = [&](double cx, double cy, double a0, double a1) {
+            std::vector<cv::Point2d> c;
+            const int n = 40;
+            for (int i = 0; i <= n; ++i) {
+                const double a = a0 + (a1 - a0) * i / n;
+                c.push_back({ cx + 9.15 * std::cos(a), cy + 9.15 * std::sin(a) });
+            }
+            m.push_back(std::move(c));
+        };
+        arc(11.0, 34.0, -half, half);                 // left arc, opens toward +x
+        arc(94.0, 34.0, M_PI - half, M_PI + half);    // right arc, opens toward -x
+        return m;
+    }();
+    return k;
 }
 }  // namespace
 
@@ -118,26 +176,48 @@ QVariantList HomographyManager::pitchLandmarks() const
 
 void HomographyManager::setPitchPoint(const QString &id, double px, double py)
 {
-    bool found = false;
-    for (Correspondence &c : m_points) {
-        if (c.id == id) {
-            c.pitch = QPointF(px, py);
-            found = true;
-            break;
-        }
-    }
-    if (!found)
+    int idx = -1;
+    for (int i = 0; i < 4; ++i)
+        if (m_points[i].id == id) { idx = i; break; }
+    if (idx < 0)
         return;
+    m_points[idx].pitch = QPointF(px, py);
     m_touched = true;
-    // Pitch meaning is global (applies to every keyframe): re-solve H with
-    // the new correspondence for the current frame.
-    if (!m_keyframes.isEmpty()) {
-        refreshForCurrentFrame();   // emits pointsChanged + stateChanged
-    } else {
-        emit pointsChanged();
-        emit stateChanged();
+
+    // Re-solve H from the CURRENT image + pitch points so the overlay updates
+    // live (image points are never overwritten by interpolation here).
+    QPointF img[4], pit[4];
+    for (int i = 0; i < 4; ++i) {
+        img[i] = m_points[i].image;
+        pit[i] = m_points[i].pitch;
     }
+    double err = 0.0;
+    m_H = solveH(img, pit, &err);
+    m_reprojError = err;
+
+    // Commit the choice to the keyframe that governs this frame — the *nearest*
+    // one, i.e. the same keyframe whose assignment pitchPointsAt() shows here.
+    // Matching by nearest-within-a-window (not exact frame) makes the
+    // reassignment persist even when the current frame is a frame or two off a
+    // keyframe (imprecise seek, stepper nudge), which previously dropped the
+    // edit on the next navigation. Far from any keyframe the edit belongs to a
+    // new keyframe and stays uncommitted until Recompute — committing it here
+    // would corrupt a distant existing keyframe.
+    const int ki = nearestKeyframeIndex(m_currentFrame);
+    const bool committed = ki >= 0
+        && std::abs(m_currentFrame - m_keyframes[ki].frame) <= kPitchEditWindowFrames;
+    if (committed) {
+        m_keyframes[ki].pitch[idx] = QPointF(px, py);
+        if (m_keyframes[ki].frame == m_currentFrame)
+            m_keyframes[ki].reprojError = err;
+    }
+    m_verified = committed && !m_H.empty();
+
+    emit pointsChanged();
+    emit stateChanged();
     emit edited();
+    if (committed)
+        emit keyframesChanged();
 }
 
 void HomographyManager::setPitchLandmark(const QString &id, const QString &key)
@@ -179,6 +259,14 @@ void HomographyManager::setOverlayEnabled(bool on)
     emit overlayChanged();
 }
 
+void HomographyManager::setModelOverlayEnabled(bool on)
+{
+    if (m_modelOverlayEnabled == on)
+        return;
+    m_modelOverlayEnabled = on;
+    emit modelOverlayChanged();
+}
+
 void HomographyManager::setImageSize(int width, int height)
 {
     if (width <= 0 || height <= 0)
@@ -206,18 +294,28 @@ void HomographyManager::setCurrentFrame(int frame)
 
 void HomographyManager::setImagePoint(const QString &id, double x, double y)
 {
-    for (Correspondence &c : m_points) {
-        if (c.id == id) {
-            c.image = QPointF(x, y);
-            m_touched = true;
-            // Edits are uncommitted until Recompute stores a keyframe.
-            m_verified = false;
-            emit pointsChanged();
-            emit stateChanged();
-            emit edited();
-            return;
-        }
+    int idx = -1;
+    for (int i = 0; i < 4; ++i)
+        if (m_points[i].id == id) { idx = i; break; }
+    if (idx < 0)
+        return;
+    m_points[idx].image = QPointF(x, y);
+    m_touched = true;
+    // Edits are uncommitted until Recompute stores a keyframe, but keep the
+    // working H live so overlays (including the model reprojection) preview the
+    // edit immediately.
+    QPointF img[4], pit[4];
+    for (int i = 0; i < 4; ++i) {
+        img[i] = m_points[i].image;
+        pit[i] = m_points[i].pitch;
     }
+    double err = 0.0;
+    m_H = solveH(img, pit, &err);
+    m_reprojError = err;
+    m_verified = false;
+    emit pointsChanged();
+    emit stateChanged();
+    emit edited();
 }
 
 void HomographyManager::reset()
@@ -233,15 +331,16 @@ void HomographyManager::reset()
     emit edited();
 }
 
-cv::Mat HomographyManager::solveH(const QPointF img[4], double *reprojErrPx) const
+cv::Mat HomographyManager::solveH(const QPointF img[4], const QPointF pit[4],
+                                  double *reprojErrPx) const
 {
     std::vector<cv::Point2f> ip, pp;
     ip.reserve(4);
     pp.reserve(4);
     for (int i = 0; i < 4; ++i) {
         ip.emplace_back(static_cast<float>(img[i].x()), static_cast<float>(img[i].y()));
-        pp.emplace_back(static_cast<float>(m_points[i].pitch.x()),
-                        static_cast<float>(m_points[i].pitch.y()));
+        pp.emplace_back(static_cast<float>(pit[i].x()),
+                        static_cast<float>(pit[i].y()));
     }
 
     // Exact 4-point homography (image -> pitch) via the configurable solver
@@ -305,16 +404,46 @@ void HomographyManager::imagePointsAt(int frame, QPointF out[4]) const
     interpolatedImagePoints(frame, out);
 }
 
+int HomographyManager::nearestKeyframeIndex(int frame) const
+{
+    if (m_keyframes.isEmpty())
+        return -1;
+    int best = 0;
+    int bestDist = std::abs(frame - m_keyframes[0].frame);
+    for (int i = 1; i < m_keyframes.size(); ++i) {
+        const int d = std::abs(frame - m_keyframes[i].frame);
+        if (d < bestDist) { bestDist = d; best = i; }
+    }
+    return best;
+}
+
+void HomographyManager::pitchPointsAt(int frame, QPointF out[4]) const
+{
+    // Nearest keyframe wins (pitch meaning is categorical — interpolating it
+    // between two differently-assigned keyframes is meaningless).
+    const int ki = nearestKeyframeIndex(frame);
+    if (ki < 0) {
+        for (int i = 0; i < 4; ++i)
+            out[i] = m_points[i].pitch;
+        return;
+    }
+    for (int i = 0; i < 4; ++i)
+        out[i] = m_keyframes[ki].pitch[i];
+}
+
 void HomographyManager::refreshForCurrentFrame()
 {
     if (m_keyframes.isEmpty())
         return;
-    QPointF img[4];
+    QPointF img[4], pit[4];
     imagePointsAt(m_currentFrame, img);
-    for (int i = 0; i < 4; ++i)
+    pitchPointsAt(m_currentFrame, pit);
+    for (int i = 0; i < 4; ++i) {
         m_points[i].image = img[i];
+        m_points[i].pitch = pit[i];   // reflect this frame's landmark choice
+    }
     double err = 0.0;
-    m_H = solveH(img, &err);
+    m_H = solveH(img, pit, &err);
     m_verified = !m_H.empty();
     m_reprojError = err;
     emit pointsChanged();
@@ -322,14 +451,16 @@ void HomographyManager::refreshForCurrentFrame()
 }
 
 void HomographyManager::upsertKeyframe(int frame, const QPointF img[4],
-                                       bool verified, double err)
+                                       const QPointF pit[4], bool verified, double err)
 {
     Keyframe kf;
     kf.frame = frame;
     kf.verified = verified;
     kf.reprojError = err;
-    for (int j = 0; j < 4; ++j)
+    for (int j = 0; j < 4; ++j) {
         kf.image[j] = img[j];
+        kf.pitch[j] = pit[j];
+    }
 
     for (int i = 0; i < m_keyframes.size(); ++i) {
         if (m_keyframes[i].frame == frame) {
@@ -345,12 +476,14 @@ void HomographyManager::upsertKeyframe(int frame, const QPointF img[4],
 
 void HomographyManager::recompute()
 {
-    QPointF img[4];
-    for (int i = 0; i < 4; ++i)
+    QPointF img[4], pit[4];
+    for (int i = 0; i < 4; ++i) {
         img[i] = m_points[i].image;
+        pit[i] = m_points[i].pitch;
+    }
 
     double err = 0.0;
-    cv::Mat H = solveH(img, &err);
+    cv::Mat H = solveH(img, pit, &err);
     if (H.empty()) {
         m_H.release();
         m_verified = false;
@@ -361,7 +494,7 @@ void HomographyManager::recompute()
     m_H = H;
     m_reprojError = err;
     m_verified = true;
-    upsertKeyframe(m_currentFrame, img, true, err);
+    upsertKeyframe(m_currentFrame, img, pit, true, err);
     m_touched = true;
     // The dense propagation is now stale relative to the edited keyframes.
     if (!m_dense.isEmpty()) {
@@ -403,9 +536,10 @@ void HomographyManager::removeKeyframe(int frame)
 
 cv::Mat HomographyManager::homographyAt(int frame) const
 {
-    QPointF img[4];
+    QPointF img[4], pit[4];
     imagePointsAt(frame, img);
-    return solveH(img);
+    pitchPointsAt(frame, pit);
+    return solveH(img, pit);
 }
 
 void HomographyManager::applyRefinedHomography(int frame, const cv::Mat &H, double errPx)
@@ -414,18 +548,20 @@ void HomographyManager::applyRefinedHomography(int frame, const cv::Mat &H, doub
         return;
     // Recover the 4 reference image points: pitch -> image via H^-1.
     const cv::Mat Hinv = H.inv();
-    std::vector<cv::Point2f> pit, imgPts;
-    pit.reserve(4);
+    std::vector<cv::Point2f> pitVec, imgPts;
+    pitVec.reserve(4);
     for (int i = 0; i < 4; ++i)
-        pit.emplace_back(static_cast<float>(m_points[i].pitch.x()),
-                         static_cast<float>(m_points[i].pitch.y()));
-    cv::perspectiveTransform(pit, imgPts, Hinv);
+        pitVec.emplace_back(static_cast<float>(m_points[i].pitch.x()),
+                            static_cast<float>(m_points[i].pitch.y()));
+    cv::perspectiveTransform(pitVec, imgPts, Hinv);
 
-    QPointF img[4];
-    for (int i = 0; i < 4; ++i)
+    QPointF img[4], pit[4];
+    for (int i = 0; i < 4; ++i) {
         img[i] = QPointF(imgPts[i].x, imgPts[i].y);
+        pit[i] = m_points[i].pitch;
+    }
 
-    upsertKeyframe(frame, img, true, errPx);
+    upsertKeyframe(frame, img, pit, true, errPx);
     m_touched = true;
     if (!m_dense.isEmpty()) {   // dense propagation is now stale
         m_dense.clear();
@@ -628,6 +764,103 @@ QPointF HomographyManager::imageToPitchAt(int frame, double x, double y) const
     return QPointF(out[0].x, out[0].y);
 }
 
+namespace {
+// Project a pitch point (meters) through Hinv (pitch->image). A homography is
+// only defined up to scale, so the sign of the projective depth w is arbitrary;
+// `frontSign` (derived from a point known to be on-camera) selects the visible
+// side of the horizon. Returns false for points on/behind it — they must not be
+// drawn or connected across.
+inline bool projectPitch(const cv::Mat &Hinv, double px, double py,
+                         double frontSign, QPointF *out)
+{
+    const double *h = Hinv.ptr<double>();
+    const double u = h[0] * px + h[1] * py + h[2];
+    const double v = h[3] * px + h[4] * py + h[5];
+    const double w = h[6] * px + h[7] * py + h[8];
+    if (frontSign * w <= 1e-9)
+        return false;
+    *out = QPointF(u / w, v / w);
+    return true;
+}
+}  // namespace
+
+// Sign of the projective depth for the on-camera side, taken from the four
+// calibration correspondences (which are, by construction, in front).
+double HomographyManager::frontSign(const cv::Mat &Hinv) const
+{
+    const double *h = Hinv.ptr<double>();
+    double wsum = 0.0;
+    for (const Correspondence &c : m_points)
+        wsum += h[6] * c.pitch.x() + h[7] * c.pitch.y() + h[8];
+    return wsum >= 0.0 ? 1.0 : -1.0;
+}
+
+QPointF HomographyManager::pitchToImage(double px, double py) const
+{
+    if (m_H.empty())
+        return QPointF(-1.0, -1.0);
+    const cv::Mat Hinv = m_H.inv();
+    QPointF p;
+    return projectPitch(Hinv, px, py, frontSign(Hinv), &p) ? p : QPointF(-1.0, -1.0);
+}
+
+QPointF HomographyManager::pitchToImageAt(int frame, double px, double py) const
+{
+    const cv::Mat H = homographyAt(frame);
+    if (H.empty())
+        return QPointF(-1.0, -1.0);
+    const cv::Mat Hinv = H.inv();
+    QPointF p;
+    return projectPitch(Hinv, px, py, frontSign(Hinv), &p) ? p : QPointF(-1.0, -1.0);
+}
+
+QVariantMap HomographyManager::projectedPitchModel(int frame) const
+{
+    QVariantMap result;
+    // On the frame that is showing, use the live working H so edits to the
+    // point correspondences or their pitch landmarks preview immediately
+    // (before Recompute commits them to a keyframe). Other frames use the
+    // interpolated/propagated keyframe homography.
+    const cv::Mat H = (frame == m_currentFrame && !m_H.empty())
+                          ? m_H : homographyAt(frame);
+    if (H.empty()) {
+        result[QStringLiteral("valid")] = false;
+        return result;
+    }
+    const cv::Mat Hinv = H.inv();
+    const double s = frontSign(Hinv);
+
+    // Project each model polyline, breaking it into runs of consecutive
+    // on-camera vertices so a line never jumps across the horizon.
+    QVariantList lines;
+    for (const std::vector<cv::Point2d> &poly : pitchModelPolylines()) {
+        QVariantList run;
+        for (const cv::Point2d &p : poly) {
+            QPointF img;
+            if (projectPitch(Hinv, p.x, p.y, s, &img)) {
+                run.append(img);
+            } else if (!run.isEmpty()) {
+                lines.append(QVariant(run));   // nest as one polyline (not splice)
+                run.clear();
+            }
+        }
+        if (!run.isEmpty())
+            lines.append(QVariant(run));
+    }
+    result[QStringLiteral("lines")] = lines;
+
+    // Reference landmark dots.
+    QVariantList points;
+    for (const Landmark &l : landmarkCatalog()) {
+        QPointF img;
+        if (projectPitch(Hinv, l.px, l.py, s, &img))
+            points.append(img);
+    }
+    result[QStringLiteral("points")] = points;
+    result[QStringLiteral("valid")] = true;
+    return result;
+}
+
 QJsonObject HomographyManager::toJson() const
 {
     QJsonObject o;
@@ -650,13 +883,19 @@ QJsonObject HomographyManager::toJson() const
         kobj[QStringLiteral("verified")] = k.verified;
         kobj[QStringLiteral("reproj")]   = k.reprojError;
         QJsonArray img;
+        QJsonArray pit;
         for (int j = 0; j < 4; ++j) {
             QJsonObject ip;
             ip[QStringLiteral("ix")] = k.image[j].x();
             ip[QStringLiteral("iy")] = k.image[j].y();
             img.append(ip);
+            QJsonObject pp;
+            pp[QStringLiteral("px")] = k.pitch[j].x();
+            pp[QStringLiteral("py")] = k.pitch[j].y();
+            pit.append(pp);
         }
         kobj[QStringLiteral("image")] = img;
+        kobj[QStringLiteral("pitch")] = pit;
         kfs.append(kobj);
     }
     o[QStringLiteral("keyframes")] = kfs;
@@ -715,6 +954,18 @@ void HomographyManager::fromJson(const QJsonObject &o)
                 kf.image[j] = QPointF(ip[QStringLiteral("ix")].toDouble(),
                                       ip[QStringLiteral("iy")].toDouble());
             }
+            // Per-keyframe pitch assignment. Older projects have none, so fall
+            // back to the global reference loaded into m_points above.
+            const QJsonArray kpit = kobj[QStringLiteral("pitch")].toArray();
+            for (int j = 0; j < 4; ++j) {
+                if (j < kpit.size()) {
+                    const QJsonObject pp = kpit[j].toObject();
+                    kf.pitch[j] = QPointF(pp[QStringLiteral("px")].toDouble(),
+                                          pp[QStringLiteral("py")].toDouble());
+                } else {
+                    kf.pitch[j] = m_points[j].pitch;
+                }
+            }
             m_keyframes.append(kf);
         }
         std::sort(m_keyframes.begin(), m_keyframes.end(),
@@ -736,6 +987,7 @@ void HomographyManager::fromJson(const QJsonObject &o)
                 m_points[i].image = QPointF(p[QStringLiteral("ix")].toDouble(),
                                             p[QStringLiteral("iy")].toDouble());
                 kf.image[i] = m_points[i].image;
+                kf.pitch[i] = m_points[i].pitch;
             }
             if (wasVerified)
                 m_keyframes.append(kf);

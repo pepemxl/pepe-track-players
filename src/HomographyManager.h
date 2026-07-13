@@ -4,6 +4,7 @@
 #include <opencv2/opencv.hpp>
 #include <QObject>
 #include <QVariantList>
+#include <QVariantMap>
 #include <QPointF>
 #include <QJsonObject>
 #include <QVector>
@@ -29,6 +30,10 @@ class HomographyManager : public QObject
     Q_PROPERTY(bool verified READ verified NOTIFY stateChanged)
     Q_PROPERTY(double reprojError READ reprojError NOTIFY stateChanged)
     Q_PROPERTY(bool overlayEnabled READ overlayEnabled WRITE setOverlayEnabled NOTIFY overlayChanged)
+    // Full pitch-model reprojection overlay: draws every pitch line and
+    // reference landmark projected onto the image via H^-1, to eyeball how
+    // well the calibration fits the visible field.
+    Q_PROPERTY(bool modelOverlayEnabled READ modelOverlayEnabled WRITE setModelOverlayEnabled NOTIFY modelOverlayChanged)
     // Manual keyframe track.
     Q_PROPERTY(QVariantList keyframes READ keyframes NOTIFY keyframesChanged)
     Q_PROPERTY(int keyframeCount READ keyframeCount NOTIFY keyframesChanged)
@@ -61,11 +66,14 @@ public:
         QPointF pitch;      // meters
     };
 
-    // 4 image points (A,B,C,D order) captured at a given frame.
+    // 4 image points (A,B,C,D order) captured at a given frame, together with
+    // the pitch landmark each of A/B/C/D maps to *at this frame* — the camera
+    // pans, so different keyframes may reference different pitch features.
     struct Keyframe
     {
         int     frame{0};
         QPointF image[4];
+        QPointF pitch[4];
         bool    verified{false};
         double  reprojError{0.0};
     };
@@ -77,6 +85,8 @@ public:
     double reprojError() const { return m_reprojError; }
     bool overlayEnabled() const { return m_overlayEnabled; }
     void setOverlayEnabled(bool on);
+    bool modelOverlayEnabled() const { return m_modelOverlayEnabled; }
+    void setModelOverlayEnabled(bool on);
 
     QVariantList keyframes() const;
     int keyframeCount() const { return m_keyframes.size(); }
@@ -122,7 +132,9 @@ public:
     Q_INVOKABLE void setImagePoint(const QString &id, double x, double y);
     // Reassign which pitch landmark a reference point maps to. The 4 points
     // default to the field corners, but any 4 non-collinear landmarks work
-    // (useful when the corners are off-screen). Applies to every keyframe.
+    // (useful when the corners are off-screen). The choice is per frame: when
+    // the current frame is a keyframe it is stored (and persisted) in it;
+    // otherwise it is an uncommitted edit applied on the next Recompute.
     Q_INVOKABLE void setPitchPoint(const QString &id, double px, double py);
     Q_INVOKABLE void setPitchLandmark(const QString &id, const QString &key);
     // Catalog of standard pitch landmarks: [{key,label,px,py}] (105x68 m).
@@ -145,6 +157,16 @@ public:
     Q_INVOKABLE QPointF imageToPitch(double x, double y) const;
     // Explicit per-frame mapping.
     Q_INVOKABLE QPointF imageToPitchAt(int frame, double x, double y) const;
+    // Inverse mapping pitch(m) -> image(px). Returns (-1,-1) when H is unusable
+    // or the point projects behind the camera.
+    Q_INVOKABLE QPointF pitchToImage(double px, double py) const;
+    Q_INVOKABLE QPointF pitchToImageAt(int frame, double px, double py) const;
+    // Full pitch model (lines + reference points) projected into image pixels
+    // for `frame`, for the reprojection overlay. Returns:
+    //   { valid:bool, lines:[[QPointF,...], ...], points:[QPointF, ...] }
+    // where each line is a run of consecutive on-camera vertices (broken where
+    // the curve crosses the horizon). Coordinates are in video pixels.
+    Q_INVOKABLE QVariantMap projectedPitchModel(int frame) const;
 
     QJsonObject toJson() const;
     void fromJson(const QJsonObject &o);
@@ -153,6 +175,7 @@ signals:
     void pointsChanged();
     void stateChanged();
     void overlayChanged();
+    void modelOverlayChanged();
     void keyframesChanged();
     void propagationChanged();
     void graphicsChanged();
@@ -161,13 +184,24 @@ signals:
 
 private:
     void applyDefaults();
-    // 4-point DLT; optionally reports the mean reprojection error (px).
-    cv::Mat solveH(const QPointF img[4], double *reprojErrPx = nullptr) const;
+    // 4-point DLT (image -> pitch) from explicit image/pitch correspondences;
+    // optionally reports the mean reprojection error (px).
+    cv::Mat solveH(const QPointF img[4], const QPointF pit[4],
+                   double *reprojErrPx = nullptr) const;
+    // Sign convention that puts the calibrated field points in front of the
+    // camera when projecting pitch -> image through Hinv (H is up to scale).
+    double frontSign(const cv::Mat &Hinv) const;
     void interpolatedImagePoints(int frame, QPointF out[4]) const;
     // Image points for a frame: dense track if propagated, else interpolation.
     void imagePointsAt(int frame, QPointF out[4]) const;
+    // Pitch landmark meaning for a frame: taken from the nearest keyframe
+    // (categorical, so not interpolated).
+    void pitchPointsAt(int frame, QPointF out[4]) const;
+    // Index of the keyframe governing `frame` (nearest), or -1 if none.
+    int nearestKeyframeIndex(int frame) const;
     void refreshForCurrentFrame();
-    void upsertKeyframe(int frame, const QPointF img[4], bool verified, double err);
+    void upsertKeyframe(int frame, const QPointF img[4], const QPointF pit[4],
+                        bool verified, double err);
 
     QVector<Correspondence> m_points;   // pitch = fixed corners; image = working buffer
     QVector<Keyframe>       m_keyframes; // sorted by frame
@@ -176,6 +210,7 @@ private:
     bool    m_verified{false};
     double  m_reprojError{0.0};
     bool    m_overlayEnabled{true};
+    bool    m_modelOverlayEnabled{false};
     int     m_imageWidth{1920};
     int     m_imageHeight{1080};
     bool    m_touched{false}; // user moved a point since defaults were applied

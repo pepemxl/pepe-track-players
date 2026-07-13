@@ -514,6 +514,316 @@ static int runCalibrateSelftest()
     return res.ok && cornerErr(res.H) < 20.0 ? 0 : 1;
 }
 
+// Headless: regression for the bug where assigning a pitch landmark reset the
+// image points placed in the session ("pepe --homography-pitchpoint-test").
+static int runHomographyPitchPointTest()
+{
+    HomographyManager hm;
+    hm.setImageSize(1920, 1080);
+    // Calibrate + commit a keyframe at frame 0 (so m_keyframes is not empty).
+    hm.setImagePoint(QStringLiteral("A"), 100, 100);
+    hm.setImagePoint(QStringLiteral("B"), 1800, 100);
+    hm.setImagePoint(QStringLiteral("C"), 1800, 1000);
+    hm.setImagePoint(QStringLiteral("D"), 100, 1000);
+    hm.recompute();
+
+    // The user now re-places the image points in this session.
+    hm.setImagePoint(QStringLiteral("A"), 200, 200);
+    hm.setImagePoint(QStringLiteral("B"), 1700, 150);
+    hm.setImagePoint(QStringLiteral("C"), 1750, 950);
+    hm.setImagePoint(QStringLiteral("D"), 150, 900);
+
+    // Assign a pitch landmark to B — the action that used to reset the points.
+    hm.setPitchLandmark(QStringLiteral("B"), QStringLiteral("half_top"));
+
+    auto imgOf = [&](const QString &id, double &ix, double &iy) {
+        for (const QVariant &v : hm.points()) {
+            const QVariantMap m = v.toMap();
+            if (m.value(QStringLiteral("id")).toString() == id) {
+                ix = m.value(QStringLiteral("ix")).toDouble();
+                iy = m.value(QStringLiteral("iy")).toDouble();
+                return;
+            }
+        }
+    };
+    double bx = 0, by = 0, dx = 0, dy = 0;
+    imgOf(QStringLiteral("B"), bx, by);
+    imgOf(QStringLiteral("D"), dx, dy);
+    std::fprintf(stdout, "after setPitchLandmark(B): B=(%.0f,%.0f) D=(%.0f,%.0f)\n", bx, by, dx, dy);
+    const bool ok = std::abs(bx - 1700) < 1 && std::abs(by - 150) < 1
+                 && std::abs(dx - 150) < 1 && std::abs(dy - 900) < 1;
+    std::fprintf(stdout, "%s\n", ok ? "PASS: session image points preserved"
+                                     : "FAIL: image points were reset by the pitch-point change");
+    std::fflush(stdout);
+    return ok ? 0 : 1;
+}
+
+// Headless: verify the reference-pitch landmark catalog contains the added
+// points — the four centre-circle cardinal points and the penalty-area front
+// line extended to both touchlines ("pepe --landmark-catalog-test"). Also
+// checks setPitchLandmark resolves one of the new keys to the right pitch
+// coordinate.
+static int runLandmarkCatalogTest()
+{
+    HomographyManager hm;
+    const QVariantList lms = hm.pitchLandmarks();
+
+    // Build key -> (px,py) lookup and confirm keys are unique.
+    QMap<QString, QPointF> byKey;
+    bool dup = false;
+    for (const QVariant &v : lms) {
+        const QVariantMap m = v.toMap();
+        const QString k = m.value(QStringLiteral("key")).toString();
+        if (byKey.contains(k)) dup = true;
+        byKey.insert(k, QPointF(m.value(QStringLiteral("px")).toDouble(),
+                                m.value(QStringLiteral("py")).toDouble()));
+    }
+
+    struct Expect { const char *key; double px, py; };
+    const Expect want[] = {
+        // Centre circle: left/right complete the four cardinal points (radius
+        // 9.15 m about the 52.5,34 centre); top/bottom already existed.
+        { "circ_top",   52.5,  24.85 },
+        { "circ_bot",   52.5,  43.15 },
+        { "circ_left",  43.35, 34.0 },
+        { "circ_right", 61.65, 34.0 },
+        // Penalty-area front line (x = 16.5 / 88.5) extended to the touchlines.
+        { "lpa_front_top", 16.5, 0.0 },
+        { "lpa_front_bot", 16.5, 68.0 },
+        { "rpa_front_top", 88.5, 0.0 },
+        { "rpa_front_bot", 88.5, 68.0 },
+    };
+
+    bool ok = !dup;
+    if (dup) std::fprintf(stdout, "FAIL: duplicate landmark key in catalog\n");
+    for (const Expect &e : want) {
+        const QString k = QString::fromLatin1(e.key);
+        if (!byKey.contains(k)) {
+            std::fprintf(stdout, "FAIL: missing landmark '%s'\n", e.key);
+            ok = false;
+            continue;
+        }
+        const QPointF p = byKey.value(k);
+        const bool match = std::abs(p.x() - e.px) < 0.01 && std::abs(p.y() - e.py) < 0.01;
+        std::fprintf(stdout, "  %-14s (%.2f, %.2f) %s\n", e.key, p.x(), p.y(),
+                     match ? "ok" : "WRONG");
+        if (!match) ok = false;
+    }
+
+    // setPitchLandmark must resolve a new key to its catalogue coordinate.
+    hm.setPitchLandmark(QStringLiteral("A"), QStringLiteral("rpa_front_bot"));
+    double apx = -1, apy = -1;
+    for (const QVariant &v : hm.points()) {
+        const QVariantMap m = v.toMap();
+        if (m.value(QStringLiteral("id")).toString() == QLatin1String("A")) {
+            apx = m.value(QStringLiteral("px")).toDouble();
+            apy = m.value(QStringLiteral("py")).toDouble();
+        }
+    }
+    const bool assigned = std::abs(apx - 88.5) < 0.01 && std::abs(apy - 68.0) < 0.01;
+    std::fprintf(stdout, "  setPitchLandmark(A, rpa_front_bot) -> (%.2f, %.2f) %s\n",
+                 apx, apy, assigned ? "ok" : "WRONG");
+    ok = ok && assigned;
+
+    std::fprintf(stdout, "%s\n", ok ? "PASS: landmark catalog has the new points"
+                                     : "FAIL: landmark catalog check failed");
+    std::fflush(stdout);
+    return ok ? 0 : 1;
+}
+
+// Headless: two keyframes reference DIFFERENT pitch landmarks; verify each
+// keyframe keeps its own A/B/C/D assignment, that it drives the right H, and
+// that it survives a toJson/fromJson round-trip ("pepe --keyframe-pitch-test").
+static int runKeyframePitchTest()
+{
+    HomographyManager hm;
+    hm.setImageSize(1920, 1080);
+
+    // Keyframe 1 @ frame 100: A/B/C/D on the field corners (defaults).
+    hm.setCurrentFrame(100);
+    hm.setImagePoint(QStringLiteral("A"), 300, 180);
+    hm.setImagePoint(QStringLiteral("B"), 1650, 170);
+    hm.setImagePoint(QStringLiteral("C"), 1850, 980);
+    hm.setImagePoint(QStringLiteral("D"), 120, 990);
+    hm.recompute();
+
+    // Keyframe 2 @ frame 200: reassign the four points to different landmarks
+    // (left box + centre circle) — a panned camera showing another region.
+    hm.setCurrentFrame(200);
+    hm.setImagePoint(QStringLiteral("A"), 400, 200);
+    hm.setImagePoint(QStringLiteral("B"), 1400, 220);
+    hm.setImagePoint(QStringLiteral("C"), 1500, 900);
+    hm.setImagePoint(QStringLiteral("D"), 260, 880);
+    hm.setPitchLandmark(QStringLiteral("A"), QStringLiteral("lpa_tl"));   // 0,13.84
+    hm.setPitchLandmark(QStringLiteral("B"), QStringLiteral("circ_top")); // 52.5,24.85
+    hm.setPitchLandmark(QStringLiteral("C"), QStringLiteral("circ_bot")); // 52.5,43.15
+    hm.setPitchLandmark(QStringLiteral("D"), QStringLiteral("lpa_bl"));   // 0,54.16
+    hm.recompute();
+
+    auto pitchOf = [](const QVariantList &pts, const QString &id, QPointF *p) {
+        for (const QVariant &v : pts) {
+            const QVariantMap m = v.toMap();
+            if (m.value(QStringLiteral("id")).toString() == id) {
+                *p = QPointF(m.value(QStringLiteral("px")).toDouble(),
+                             m.value(QStringLiteral("py")).toDouble());
+                return;
+            }
+        }
+    };
+    auto check = [&](const QString &tag) {
+        // Land on keyframe 1: should show the corner assignment.
+        hm.setCurrentFrame(100);
+        QPointF a1; pitchOf(hm.points(), QStringLiteral("A"), &a1);
+        // Land on keyframe 2: should show the reassigned landmark.
+        hm.setCurrentFrame(200);
+        QPointF b2; pitchOf(hm.points(), QStringLiteral("B"), &b2);
+        const bool kf1ok = std::abs(a1.x() - 0.0) < 0.01 && std::abs(a1.y() - 0.0) < 0.01;
+        const bool kf2ok = std::abs(b2.x() - 52.5) < 0.01 && std::abs(b2.y() - 24.85) < 0.01;
+        std::fprintf(stdout, "[%s] KF100 A=(%.2f,%.2f) %s | KF200 B=(%.2f,%.2f) %s\n",
+                     qPrintable(tag), a1.x(), a1.y(), kf1ok ? "ok" : "WRONG",
+                     b2.x(), b2.y(), kf2ok ? "ok" : "WRONG");
+        return kf1ok && kf2ok;
+    };
+
+    const bool live = check(QStringLiteral("live"));
+
+    // Round-trip through JSON.
+    const QJsonObject json = hm.toJson();
+    HomographyManager hm2;
+    hm2.setImageSize(1920, 1080);
+    hm2.fromJson(json);
+    QPointF a1, b2;
+    hm2.setCurrentFrame(100); pitchOf(hm2.points(), QStringLiteral("A"), &a1);
+    hm2.setCurrentFrame(200); pitchOf(hm2.points(), QStringLiteral("B"), &b2);
+    const bool persisted = std::abs(a1.x()) < 0.01 && std::abs(a1.y()) < 0.01
+                        && std::abs(b2.x() - 52.5) < 0.01 && std::abs(b2.y() - 24.85) < 0.01;
+    std::fprintf(stdout, "[reload] KF100 A=(%.2f,%.2f) | KF200 B=(%.2f,%.2f) %s\n",
+                 a1.x(), a1.y(), b2.x(), b2.y(), persisted ? "ok" : "WRONG");
+
+    const bool ok = live && persisted;
+    std::fprintf(stdout, "%s\n", ok ? "PASS: per-keyframe pitch preserved and persisted"
+                                     : "FAIL: per-keyframe pitch lost");
+    std::fflush(stdout);
+    return ok ? 0 : 1;
+}
+
+// Headless: reproduce the user report — reassigning a reference-pitch landmark
+// at a keyframe WITHOUT pressing "Set keyframe", then navigating between
+// keyframes / reloading, and checking whether the choice sticks
+// ("pepe --keyframe-pitch-nav-test").
+static int runKeyframePitchNavTest()
+{
+    auto pxOf = [](HomographyManager &h, const QString &id) {
+        for (const QVariant &v : h.points()) {
+            const QVariantMap m = v.toMap();
+            if (m.value(QStringLiteral("id")).toString() == id)
+                return QPointF(m.value(QStringLiteral("px")).toDouble(),
+                               m.value(QStringLiteral("py")).toDouble());
+        }
+        return QPointF(-1, -1);
+    };
+    auto placeCorners = [](HomographyManager &h, int f) {
+        h.setCurrentFrame(f);
+        h.setImagePoint(QStringLiteral("A"), 300, 180);
+        h.setImagePoint(QStringLiteral("B"), 1650, 170);
+        h.setImagePoint(QStringLiteral("C"), 1850, 980);
+        h.setImagePoint(QStringLiteral("D"), 120, 990);
+        h.recompute();
+    };
+
+    bool allOk = true;
+
+    // --- Scenario A: reassign exactly on a keyframe, no recompute ---
+    {
+        HomographyManager hm;
+        hm.setImageSize(1920, 1080);
+        placeCorners(hm, 100);
+        placeCorners(hm, 500);
+        hm.setCurrentFrame(100);
+        hm.setPitchLandmark(QStringLiteral("A"), QStringLiteral("circ_top")); // (52.5,24.85)
+        hm.setCurrentFrame(500);
+        hm.setCurrentFrame(100);
+        const QPointF a = pxOf(hm, QStringLiteral("A"));
+        const bool navOk = std::abs(a.x() - 52.5) < 0.01 && std::abs(a.y() - 24.85) < 0.01;
+        // Round-trip.
+        HomographyManager hm2; hm2.setImageSize(1920, 1080); hm2.fromJson(hm.toJson());
+        hm2.setCurrentFrame(100);
+        const QPointF a2 = pxOf(hm2, QStringLiteral("A"));
+        const bool rtOk = std::abs(a2.x() - 52.5) < 0.01 && std::abs(a2.y() - 24.85) < 0.01;
+        std::fprintf(stdout, "[A on-keyframe no-recompute] nav A=(%.2f,%.2f) %s | reload A=(%.2f,%.2f) %s\n",
+                     a.x(), a.y(), navOk ? "ok" : "REVERTED",
+                     a2.x(), a2.y(), rtOk ? "ok" : "REVERTED");
+        allOk = allOk && navOk && rtOk;
+    }
+
+    // --- Scenario B: reassign one frame OFF the keyframe (imprecise seek) ---
+    {
+        HomographyManager hm;
+        hm.setImageSize(1920, 1080);
+        placeCorners(hm, 100);
+        placeCorners(hm, 500);
+        hm.setCurrentFrame(101);   // user thinks they are "on" keyframe 100
+        hm.setPitchLandmark(QStringLiteral("A"), QStringLiteral("circ_top"));
+        hm.setCurrentFrame(500);
+        hm.setCurrentFrame(100);
+        const QPointF a = pxOf(hm, QStringLiteral("A"));
+        const bool stuck = std::abs(a.x() - 52.5) < 0.01 && std::abs(a.y() - 24.85) < 0.01;
+        // Round-trip too.
+        HomographyManager hm2; hm2.setImageSize(1920, 1080); hm2.fromJson(hm.toJson());
+        hm2.setCurrentFrame(100);
+        const QPointF a2 = pxOf(hm2, QStringLiteral("A"));
+        const bool rtOk = std::abs(a2.x() - 52.5) < 0.01 && std::abs(a2.y() - 24.85) < 0.01;
+        std::fprintf(stdout, "[B off-by-one] back-at-100 A=(%.2f,%.2f) %s | reload %s\n",
+                     a.x(), a.y(), stuck ? "stuck" : "REVERTED",
+                     rtOk ? "ok" : "REVERTED");
+        allOk = allOk && stuck && rtOk;
+    }
+
+    std::fprintf(stdout, "%s\n", allOk ? "PASS: on-keyframe reassignment persists"
+                                       : "FAIL: on-keyframe reassignment lost");
+    std::fflush(stdout);
+    return allOk ? 0 : 1;
+}
+
+// Headless: verify the pitch-model reprojection (pitch->image via H^-1)
+// produces non-empty geometry for a plausible camera ("pepe
+// --reproject-model-test").
+static int runReprojectModelTest()
+{
+    HomographyManager hm;
+    hm.setImageSize(1920, 1080);
+    // A trapezoid mapping the field corners to a broadcast-like view.
+    hm.setImagePoint(QStringLiteral("A"), 300, 180);
+    hm.setImagePoint(QStringLiteral("B"), 1650, 170);
+    hm.setImagePoint(QStringLiteral("C"), 1850, 980);
+    hm.setImagePoint(QStringLiteral("D"), 120, 990);
+    hm.recompute();
+
+    const QVariantMap m = hm.projectedPitchModel(0);
+    const bool valid = m.value(QStringLiteral("valid")).toBool();
+    const QVariantList lines = m.value(QStringLiteral("lines")).toList();
+    const QVariantList points = m.value(QStringLiteral("points")).toList();
+    int verts = 0;
+    for (const QVariant &l : lines) verts += l.toList().size();
+    std::fprintf(stdout, "valid=%d  lines=%d (%d verts)  points=%d\n",
+                 valid ? 1 : 0, static_cast<int>(lines.size()), verts,
+                 static_cast<int>(points.size()));
+
+    // Round-trip a couple of landmarks: pitch -> image -> pitch.
+    const QPointF centre = hm.pitchToImage(52.5, 34.0);
+    const QPointF back = hm.imageToPitch(centre.x(), centre.y());
+    std::fprintf(stdout, "centre spot -> img(%.1f,%.1f) -> pitch(%.2f,%.2f)\n",
+                 centre.x(), centre.y(), back.x(), back.y());
+    const bool rt = std::abs(back.x() - 52.5) < 0.5 && std::abs(back.y() - 34.0) < 0.5;
+
+    const bool ok = valid && !lines.isEmpty() && verts > 20
+                 && points.size() > 10 && centre.x() > 0 && rt;
+    std::fprintf(stdout, "%s\n", ok ? "PASS: reprojection produced geometry"
+                                     : "FAIL: reprojection geometry missing/wrong");
+    std::fflush(stdout);
+    return ok ? 0 : 1;
+}
+
 // Headless: shot segmentation over a frame range ("pepe --detect-shots <video>
 // <startFrame> <count>"), printing the shots and writing shots.json.
 static int runDetectShots(const QString &videoPath, int startFrame, int count)
@@ -714,6 +1024,16 @@ int main(int argc, char *argv[])
             return runCalibrateLines(args);
         if (args.size() >= 2 && args.at(1) == QLatin1String("--calibrate-selftest"))
             return runCalibrateSelftest();
+        if (args.size() >= 2 && args.at(1) == QLatin1String("--homography-pitchpoint-test"))
+            return runHomographyPitchPointTest();
+        if (args.size() >= 2 && args.at(1) == QLatin1String("--landmark-catalog-test"))
+            return runLandmarkCatalogTest();
+        if (args.size() >= 2 && args.at(1) == QLatin1String("--reproject-model-test"))
+            return runReprojectModelTest();
+        if (args.size() >= 2 && args.at(1) == QLatin1String("--keyframe-pitch-test"))
+            return runKeyframePitchTest();
+        if (args.size() >= 2 && args.at(1) == QLatin1String("--keyframe-pitch-nav-test"))
+            return runKeyframePitchNavTest();
         if (args.size() >= 5 && args.at(1) == QLatin1String("--detect-shots"))
             return runDetectShots(args.at(2), args.at(3).toInt(), args.at(4).toInt());
         if (args.size() >= 8 && args.at(1) == QLatin1String("--flow-mask-test"))

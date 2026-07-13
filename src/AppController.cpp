@@ -21,6 +21,7 @@
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
+#include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QTextStream>
@@ -957,6 +958,66 @@ void AppController::autoCalibrateHomography()
     }
     m_homography->applyRefinedHomography(m_currentFrame, res.H, res.reprojErr);
     markDirty();
+}
+
+QString AppController::exportHomographies()
+{
+    if (!m_videoLoaded || m_totalFrames <= 0) {
+        m_lastError = QStringLiteral("Open a video before exporting homographies");
+        emit errorChanged();
+        return {};
+    }
+    if (m_homography->keyframeCount() < 1) {
+        m_lastError = QStringLiteral("Calibrate at least one keyframe before exporting");
+        emit errorChanged();
+        return {};
+    }
+    const QString dirPath = projectDir();
+    if (dirPath.isEmpty()) {
+        m_lastError = QStringLiteral("No project directory for this video");
+        emit errorChanged();
+        return {};
+    }
+    QDir().mkpath(dirPath);
+
+    QJsonArray frames;
+    for (int f = 0; f < m_totalFrames; ++f) {
+        const cv::Mat H = m_homography->homographyAt(f);
+        if (H.empty())
+            continue;
+        cv::Mat Hd;
+        H.convertTo(Hd, CV_64F);
+        QJsonArray h;
+        for (int i = 0; i < 9; ++i)
+            h.append(Hd.at<double>(i / 3, i % 3));
+        QJsonObject row;
+        row[QStringLiteral("f")]    = f;
+        row[QStringLiteral("H")]    = h;
+        row[QStringLiteral("conf")] = m_homography->confidenceAt(f);
+        frames.append(row);
+    }
+
+    QJsonObject root;
+    root[QStringLiteral("video")]  = m_videoPath;
+    root[QStringLiteral("width")]  = m_videoWidth;
+    root[QStringLiteral("height")] = m_videoHeight;
+    root[QStringLiteral("fps")]    = m_fps;
+    root[QStringLiteral("count")]  = frames.size();
+    root[QStringLiteral("note")]   = QStringLiteral(
+        "Row H is a 3x3 (row-major) homography mapping image pixels -> pitch "
+        "meters (105x68). Its inverse maps pitch -> image.");
+    root[QStringLiteral("frames")] = frames;
+
+    const QString outPath = QDir(dirPath).filePath(QStringLiteral("homographies.json"));
+    QFile file(outPath);
+    if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+        m_lastError = QStringLiteral("Cannot write %1").arg(outPath);
+        emit errorChanged();
+        return {};
+    }
+    file.write(QJsonDocument(root).toJson(QJsonDocument::Compact));
+    file.close();
+    return outPath;
 }
 
 // ---- phase F4: shot segmentation ------------------------------------------

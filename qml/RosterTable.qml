@@ -90,11 +90,23 @@ Column {
                     required property string name
                     required property string position
 
+                    // A zero number means the id inference could not read the
+                    // shirt number — flag the row in amber so it's easy to fix.
+                    readonly property bool unidentified: number === 0
+
                     width: list.width
                     height: 40
-                    color: "transparent"
+                    color: unidentified ? "#26e0ac37" : "transparent"
 
                     Rectangle { width: parent.width; height: 1; color: "#242830" }
+
+                    // Left accent bar on unidentified rows.
+                    Rectangle {
+                        visible: parent.unidentified
+                        width: 3; height: parent.height
+                        anchors.left: parent.left
+                        color: Theme.yellow
+                    }
 
                     Row {
                         anchors.fill: parent
@@ -104,7 +116,7 @@ Column {
                             width: 56
                             boxed: false
                             text: number
-                            textColor: table.teamColor
+                            textColor: unidentified ? Theme.yellow : table.teamColor
                             font { family: Theme.fontMono; pixelSize: 13; weight: Font.Bold }
                             anchors.verticalCenter: parent.verticalCenter
                             onEditingFinished: table.roster.set(index, "number", parseInt(text) || 0)

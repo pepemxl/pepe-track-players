@@ -198,6 +198,11 @@ public:
     // (manual/interpolated) H, and store the result as a verified keyframe.
     Q_INVOKABLE void autoCalibrateHomography();
 
+    // Export the per-frame homography (image->pitch 3x3) for every frame to
+    // <project>/homographies.json. Returns the written path, or an empty
+    // string on failure (see lastError).
+    Q_INVOKABLE QString exportHomographies();
+
     // Phase F4 shot segmentation.
     bool hasShots() const { return !m_shots.isEmpty(); }
     int shotCount() const { return m_shots.size(); }

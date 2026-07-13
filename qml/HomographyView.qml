@@ -9,6 +9,8 @@ Item {
     property string selectedPointId: ""
     // Which reference point (A/B/C/D) the mini-pitch is assigning a landmark to.
     property string pitchEditId: "A"
+    // Last result message from the per-frame homography export.
+    property string exportResult: ""
     // Graphics-region draw mode (phase F5): drag on the video to mark a static
     // on-screen overlay (scoreboard/logo) to exclude from the flow estimation.
     property bool graphicsMode: false
@@ -90,6 +92,56 @@ Item {
                                 const mbx = (P.C.x + P.D.x) / 2, mby = (P.C.y + P.D.y) / 2
                                 ctx.moveTo(mtx, mty); ctx.lineTo(mbx, mby)
                                 ctx.stroke()
+                            }
+                        }
+                    }
+
+                    // Full pitch-model reprojection: every pitch line and
+                    // reference landmark projected onto the image via H^-1,
+                    // to eyeball how well the calibration fits the field.
+                    Canvas {
+                        id: modelCanvas
+                        anchors.fill: parent
+                        visible: App.homography.modelOverlayEnabled && App.videoLoaded
+                        property int frame: App.homography.currentFrame
+                        property var pts: App.homography.points
+                        property real paintedW: surface.paintedWidth
+                        property real paintedH: surface.paintedHeight
+                        onVisibleChanged: requestPaint()
+                        onFrameChanged: requestPaint()
+                        onPtsChanged: requestPaint()
+                        onWidthChanged: requestPaint()
+                        onHeightChanged: requestPaint()
+                        onPaintedWChanged: requestPaint()
+                        onPaintedHChanged: requestPaint()
+
+                        onPaint: {
+                            const ctx = getContext("2d")
+                            ctx.reset()
+                            if (!visible)
+                                return
+                            const model = App.homography.projectedPitchModel(frame)
+                            if (!model || !model.valid)
+                                return
+                            // Projected lines (cyan).
+                            ctx.strokeStyle = "#22e0ff"
+                            ctx.lineWidth = 1.6
+                            ctx.lineJoin = "round"
+                            for (const poly of model.lines) {
+                                if (poly.length < 2) continue
+                                ctx.beginPath()
+                                ctx.moveTo(surface.fromVideoX(poly[0].x), surface.fromVideoY(poly[0].y))
+                                for (let i = 1; i < poly.length; ++i)
+                                    ctx.lineTo(surface.fromVideoX(poly[i].x), surface.fromVideoY(poly[i].y))
+                                ctx.stroke()
+                            }
+                            // Reference landmark dots (orange).
+                            ctx.fillStyle = "#ffb46b"
+                            for (const p of model.points) {
+                                const sx = surface.fromVideoX(p.x), sy = surface.fromVideoY(p.y)
+                                ctx.beginPath()
+                                ctx.arc(sx, sy, 2.6, 0, 2 * Math.PI)
+                                ctx.fill()
                             }
                         }
                     }
@@ -554,6 +606,15 @@ Item {
                                 rect(88.5, 13.84, 105, 54.16)
                                 rect(0, 24.84, 5.5, 43.16)
                                 rect(99.5, 24.84, 105, 43.16)
+                                // penalty-area front line extended to the
+                                // touchlines (guides for the box-front ×
+                                // touchline landmarks).
+                                ctx.save()
+                                ctx.setLineDash([3, 3])
+                                ctx.strokeStyle = "#3d7a58"
+                                line(16.5, 0, 16.5, 13.84); line(16.5, 54.16, 16.5, 68)
+                                line(88.5, 0, 88.5, 13.84); line(88.5, 54.16, 88.5, 68)
+                                ctx.restore()
                             }
                         }
 
@@ -935,6 +996,119 @@ Item {
                         anchors.fill: parent
                         cursorShape: Qt.PointingHandCursor
                         onClicked: App.homography.overlayEnabled = !App.homography.overlayEnabled
+                    }
+                }
+
+                // Full pitch-model reprojection toggle + per-frame H export.
+                Column {
+                    width: parent.width
+                    spacing: 8
+
+                    Item {
+                        width: parent.width
+                        height: 16
+                        Text {
+                            anchors.left: parent.left
+                            text: "MODEL REPROJECTION"
+                            color: Theme.textDim
+                            font { family: Theme.fontUi; pixelSize: 11; weight: Font.Bold; letterSpacing: 0.5 }
+                        }
+                        Text {
+                            anchors.right: parent.right
+                            text: App.homography.verified ? "H ready" : "needs H"
+                            color: App.homography.verified ? "#8fd7e6" : Theme.textFaint
+                            font { family: Theme.fontUi; pixelSize: 11 }
+                        }
+                    }
+
+                    Text {
+                        width: parent.width
+                        wrapMode: Text.WordWrap
+                        text: "Projects the whole pitch (lines + reference points) "
+                              + "onto the image with the inverse map, so you can see "
+                              + "how well H fits the visible field."
+                        color: Theme.textFaint
+                        font { family: Theme.fontUi; pixelSize: 11 }
+                        lineHeight: 1.3
+                    }
+
+                    // Overlay toggle.
+                    Rectangle {
+                        width: parent.width
+                        height: 42
+                        radius: 8
+                        readonly property bool on: App.homography.modelOverlayEnabled
+                        color: on ? "#12323a" : Theme.surface
+                        border.color: on ? "#2f7d8f" : Theme.border
+                        border.width: 1
+
+                        Text {
+                            text: "Reproject pitch model"
+                            color: Theme.text
+                            font { family: Theme.fontUi; pixelSize: 13 }
+                            anchors.verticalCenter: parent.verticalCenter
+                            anchors.left: parent.left
+                            anchors.leftMargin: 12
+                        }
+                        Rectangle {
+                            width: 36; height: 20; radius: 10
+                            color: parent.on ? "#22c0d9" : "#2c313a"
+                            anchors.verticalCenter: parent.verticalCenter
+                            anchors.right: parent.right
+                            anchors.rightMargin: 12
+                            Rectangle {
+                                x: parent.parent.on ? 18 : 2
+                                y: 2
+                                width: 16; height: 16; radius: 8
+                                color: "white"
+                                Behavior on x { NumberAnimation { duration: 150 } }
+                            }
+                        }
+                        MouseArea {
+                            anchors.fill: parent
+                            cursorShape: Qt.PointingHandCursor
+                            onClicked: App.homography.modelOverlayEnabled = !App.homography.modelOverlayEnabled
+                        }
+                    }
+
+                    // Export per-frame H to disk.
+                    Rectangle {
+                        width: parent.width
+                        height: 36
+                        radius: 8
+                        readonly property bool on: App.videoLoaded && App.homography.keyframeCount >= 1
+                        color: !on ? Theme.surfaceHi
+                             : (exportMouse.containsMouse ? "#2f5c6b" : "#274c58")
+                        border.color: "#3d7d8f"
+                        border.width: 1
+                        Text {
+                            anchors.centerIn: parent
+                            text: "Export H · all frames"
+                            color: parent.on ? "#dff4fa" : Theme.textFaint
+                            font { family: Theme.fontUi; pixelSize: 13; weight: Font.Bold }
+                        }
+                        MouseArea {
+                            id: exportMouse
+                            anchors.fill: parent
+                            hoverEnabled: true
+                            enabled: parent.on
+                            cursorShape: enabled ? Qt.PointingHandCursor : Qt.ArrowCursor
+                            onClicked: {
+                                const path = App.exportHomographies()
+                                view.exportResult = path !== ""
+                                    ? "Saved " + (App.totalFrames) + " frames → homographies.json"
+                                    : "Export failed: " + App.lastError
+                            }
+                        }
+                    }
+
+                    Text {
+                        visible: view.exportResult !== ""
+                        width: parent.width
+                        wrapMode: Text.WordWrap
+                        text: view.exportResult
+                        color: view.exportResult.indexOf("failed") >= 0 ? Theme.red : "#8fd7a6"
+                        font { family: Theme.fontMono; pixelSize: 10 }
                     }
                 }
 
