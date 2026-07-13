@@ -27,8 +27,14 @@ Item {
         { i: 4, name: "Goalkeeper A",      color: "#6b77c9" },
         { i: 5, name: "Goalkeeper B",      color: "#c9976b" },
     ]
-    function roleColor(i) { return roles[i] ? roles[i].color : Theme.textDim }
-    function roleName(i) { return roles[i] ? roles[i].name : "" }
+    // Line-up graphic roles (PlayerSamples::TeamALineup / TeamBLineup).
+    readonly property var lineupRoles: [
+        { i: 6, name: "Team A line-up", color: Theme.homeColor },
+        { i: 7, name: "Team B line-up", color: Theme.awayColor },
+    ]
+    readonly property var allRoles: roles.concat(lineupRoles)
+    function roleColor(i) { const r = allRoles.find(x => x.i === i); return r ? r.color : Theme.textDim }
+    function roleName(i) { const r = allRoles.find(x => x.i === i); return r ? r.name : "" }
 
     // Opening the tab pauses playback so the sampling frame is stable.
     onVisibleChanged: if (visible && App.playing) App.pause()
@@ -170,6 +176,12 @@ Item {
                         font { family: Theme.fontUi; pixelSize: 12 }
                     }
 
+                    Text {
+                        text: "APPEARANCE SAMPLES"
+                        color: Theme.text
+                        font { family: Theme.fontUi; pixelSize: 13; weight: Font.Bold; letterSpacing: 0.5 }
+                    }
+
                     Repeater {
                         model: view.roles
                         delegate: Rectangle {
@@ -285,6 +297,174 @@ Item {
                                                     id: delMouse
                                                     anchors.fill: parent
                                                     anchors.margins: -6   // easier to hit
+                                                    hoverEnabled: true
+                                                    cursorShape: Qt.PointingHandCursor
+                                                    onClicked: App.playerSamples.remove(modelData.id)
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    // ---- team line-up graphics ----
+                    Rectangle {
+                        width: parent.width; height: 1; color: Theme.border
+                    }
+                    Text {
+                        text: "TEAM LINE-UPS"
+                        color: Theme.text
+                        font { family: Theme.fontUi; pixelSize: 13; weight: Font.Bold; letterSpacing: 0.5 }
+                    }
+                    Text {
+                        width: parent.width
+                        wrapMode: Text.WordWrap
+                        text: "Grab the broadcast line-up graphic for each team "
+                            + "(usually one or two frames per team). \"Grab frame\" "
+                            + "saves the whole frame; \"Crop\" lets you drag a box. "
+                            + "These give each player's position, to help infer who "
+                            + "is who by where they stand on the pitch."
+                        color: Theme.textDim
+                        font { family: Theme.fontUi; pixelSize: 12 }
+                    }
+
+                    Repeater {
+                        model: view.lineupRoles
+                        delegate: Rectangle {
+                            required property var modelData
+                            readonly property int roleIndex: modelData.i
+                            readonly property var mine:
+                                view.allSamples.filter(s => s.role === roleIndex)
+                            readonly property bool active: view.captureRole === roleIndex
+
+                            width: panel.width
+                            implicitHeight: lrows.height + 20
+                            radius: 10
+                            color: Theme.surface
+                            border.color: active ? modelData.color : Theme.border
+                            border.width: active ? 2 : 1
+
+                            Column {
+                                id: lrows
+                                x: 14; y: 10
+                                width: parent.width - 28
+                                spacing: 10
+
+                                Row {
+                                    width: parent.width
+                                    spacing: 10
+                                    Rectangle {
+                                        width: 14; height: 14; radius: 4
+                                        color: modelData.color
+                                        anchors.verticalCenter: parent.verticalCenter
+                                    }
+                                    Column {
+                                        width: parent.width - 14 - 10
+                                        anchors.verticalCenter: parent.verticalCenter
+                                        Text {
+                                            text: modelData.name
+                                            color: Theme.text
+                                            font { family: Theme.fontUi; pixelSize: 13; weight: Font.DemiBold }
+                                        }
+                                        Text {
+                                            text: mine.length + " image(s)"
+                                            color: Theme.textDim
+                                            font { family: Theme.fontUi; pixelSize: 11 }
+                                        }
+                                    }
+                                }
+
+                                // Grab-frame / Crop actions.
+                                Row {
+                                    width: parent.width
+                                    spacing: 8
+                                    Rectangle {
+                                        width: (parent.width - 8) / 2; height: 32; radius: 8
+                                        color: Theme.surfaceHi
+                                        border.color: Theme.border2; border.width: 1
+                                        opacity: App.videoLoaded ? 1 : 0.45
+                                        Text {
+                                            anchors.centerIn: parent
+                                            text: "Grab frame"
+                                            color: Theme.text
+                                            font { family: Theme.fontUi; pixelSize: 12; weight: Font.DemiBold }
+                                        }
+                                        MouseArea {
+                                            anchors.fill: parent
+                                            enabled: App.videoLoaded
+                                            cursorShape: Qt.PointingHandCursor
+                                            onClicked: App.captureFullFrameSample(roleIndex)
+                                        }
+                                    }
+                                    Rectangle {
+                                        width: (parent.width - 8) / 2; height: 32; radius: 8
+                                        color: active ? modelData.color : Theme.surfaceHi
+                                        border.color: active ? modelData.color : Theme.border2
+                                        border.width: 1
+                                        opacity: App.videoLoaded ? 1 : 0.45
+                                        Text {
+                                            anchors.centerIn: parent
+                                            text: active ? "Cropping…" : "Crop"
+                                            color: active ? "#10231a" : Theme.text
+                                            font { family: Theme.fontUi; pixelSize: 12; weight: Font.DemiBold }
+                                        }
+                                        MouseArea {
+                                            anchors.fill: parent
+                                            enabled: App.videoLoaded
+                                            cursorShape: Qt.PointingHandCursor
+                                            onClicked: view.captureRole = active ? -1 : roleIndex
+                                        }
+                                    }
+                                }
+
+                                // Landscape thumbnails of the captured line-up graphics.
+                                Flow {
+                                    width: parent.width
+                                    spacing: 6
+                                    visible: mine.length > 0
+                                    Repeater {
+                                        model: mine
+                                        delegate: Rectangle {
+                                            required property var modelData
+                                            width: 104; height: 62; radius: 4
+                                            color: "#0e1116"
+                                            border.color: Theme.border2; border.width: 1
+                                            clip: true
+                                            Image {
+                                                anchors.fill: parent
+                                                anchors.margins: 1
+                                                source: modelData.thumbUrl
+                                                fillMode: Image.PreserveAspectCrop
+                                                cache: false
+                                                asynchronous: true
+                                            }
+                                            Rectangle {
+                                                anchors.bottom: parent.bottom
+                                                width: parent.width; height: 12
+                                                color: "#b0000000"
+                                                Text {
+                                                    anchors.centerIn: parent
+                                                    text: "f" + modelData.frame
+                                                    color: Theme.textBright
+                                                    font { family: Theme.fontMono; pixelSize: 8 }
+                                                }
+                                            }
+                                            MouseArea {
+                                                anchors.fill: parent
+                                                cursorShape: Qt.PointingHandCursor
+                                                onClicked: App.seekFrame(modelData.frame)
+                                            }
+                                            Rectangle {
+                                                anchors.top: parent.top; anchors.right: parent.right
+                                                width: 17; height: 17; radius: 8
+                                                color: lupDel.containsMouse ? Theme.red : "#c0121419"
+                                                Text { anchors.centerIn: parent; text: "×"; color: "white"; font.pixelSize: 12 }
+                                                MouseArea {
+                                                    id: lupDel
+                                                    anchors.fill: parent
+                                                    anchors.margins: -6
                                                     hoverEnabled: true
                                                     cursorShape: Qt.PointingHandCursor
                                                     onClicked: App.playerSamples.remove(modelData.id)

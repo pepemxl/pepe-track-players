@@ -17,6 +17,8 @@ const RoleInfo kRoles[] = {
     {"assistant_ref", "Assistant referee"},
     {"gk_a",          "Goalkeeper A"},
     {"gk_b",          "Goalkeeper B"},
+    {"team_a_lineup", "Team A line-up"},
+    {"team_b_lineup", "Team B line-up"},
 };
 
 } // namespace

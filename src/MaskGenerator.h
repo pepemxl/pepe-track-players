@@ -30,10 +30,12 @@ public:
     ~MaskGenerator() override;
 
     // chunksDir holds the video_part_<NNN>.mp4 files; outDir is the match dir
-    // under which green_mask/ or static_mask/ trees are written. chunkNumbers
-    // selects which parts to process (empty = every part found in chunksDir).
+    // under which green_mask<suffix>/ or static_mask<suffix>/ trees are written.
+    // videoSuffix (e.g. "_01") keeps a match's several videos from colliding.
+    // chunkNumbers selects which parts to process (empty = every part found).
     void configure(Kind kind, const QString &chunksDir,
-                   const QVector<int> &chunkNumbers, const QString &outDir);
+                   const QVector<int> &chunkNumbers, const QString &outDir,
+                   const QString &videoSuffix = QString());
 
     void requestStop() { m_stop.store(true); }
     void stopAndWait();
@@ -75,6 +77,7 @@ private:
     Kind         m_kind{Kind::Green};
     QString      m_chunksDir;
     QString      m_outDir;
+    QString      m_suffix;   // e.g. "_01"; appended to green_mask/static_mask dir names
     QVector<int> m_chunks;
     std::atomic<bool> m_stop{false};
 };

@@ -29,6 +29,8 @@ public:
         AssistantRef,
         GoalkeeperA,
         GoalkeeperB,
+        TeamALineup,   // captured line-up graphic(s), team A (home)
+        TeamBLineup,   // captured line-up graphic(s), team B (away)
         RoleCount
     };
     Q_ENUM(Role)

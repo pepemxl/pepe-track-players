@@ -22,11 +22,13 @@ MaskGenerator::MaskGenerator(QObject *parent) : QThread(parent) {}
 MaskGenerator::~MaskGenerator() { stopAndWait(); }
 
 void MaskGenerator::configure(Kind kind, const QString &chunksDir,
-                              const QVector<int> &chunkNumbers, const QString &outDir)
+                              const QVector<int> &chunkNumbers, const QString &outDir,
+                              const QString &videoSuffix)
 {
     m_kind = kind;
     m_chunksDir = chunksDir;
     m_outDir = outDir;
+    m_suffix = videoSuffix;
     m_chunks = chunkNumbers.isEmpty() ? discoverChunks(chunksDir) : chunkNumbers;
     std::sort(m_chunks.begin(), m_chunks.end());
     m_stop.store(false);
@@ -208,8 +210,8 @@ int MaskGenerator::runGreen()
             + QStringLiteral("/video_part_%1.mp4").arg(part, 3, 10, QLatin1Char('0'));
         if (!QFileInfo::exists(chunkPath)) continue;
 
-        const QString outDir = m_outDir
-            + QStringLiteral("/green_mask/video_part_%1").arg(part, 3, 10, QLatin1Char('0'));
+        const QString outDir = m_outDir + QStringLiteral("/green_mask") + m_suffix
+            + QStringLiteral("/video_part_%1").arg(part, 3, 10, QLatin1Char('0'));
         QDir().mkpath(outDir);
 
         cv::VideoCapture cap;
@@ -254,8 +256,8 @@ int MaskGenerator::runStatic()
         const cv::Mat mask = staticMask(chunkPath, &m_stop);
         if (mask.empty()) continue;
 
-        const QString outDir = m_outDir
-            + QStringLiteral("/static_mask/video_part_%1").arg(part, 3, 10, QLatin1Char('0'));
+        const QString outDir = m_outDir + QStringLiteral("/static_mask") + m_suffix
+            + QStringLiteral("/video_part_%1").arg(part, 3, 10, QLatin1Char('0'));
         QDir().mkpath(outDir);
         cv::imwrite((outDir + QStringLiteral("/mask.png")).toStdString(), mask);
         ++written;

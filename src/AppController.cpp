@@ -250,8 +250,9 @@ void AppController::openVideo(const QUrl &url)
     m_engine->start();
 
     m_tracking->setSource(path);
-    m_playerSamples->setBaseDir(projectDir());
-    loadProjectIfPresent();
+    // The project + player samples live under the match dir, which is only
+    // resolved once the video info arrives (onVideoInfo -> m_match->setVideo),
+    // so both are loaded there, not here.
 
     emit playingChanged();
 }
@@ -605,11 +606,16 @@ void AppController::onVideoInfo(int width, int height, int totalFrames, double f
     m_homography->setImageSize(width, height);
     m_match->setVideo(m_videoPath, fps, totalFrames);
 
+    // Now that the match dir / video id are known, load the consolidated
+    // project for this video (migrating a legacy <video>_project if present).
+    m_playerSamples->setBaseDir(playerSamplesDir());
+    loadProjectIfPresent();
+
     // Reflect a previously extracted lineup (e.g. from the headless CLI)
     // unless the saved project is newer — manual roster edits win.
     const QVariantMap lineups = m_match->loadLineups();
     if (!lineups.isEmpty()) {
-        const QFileInfo project(QDir(projectDir()).filePath(QStringLiteral("project.json")));
+        const QFileInfo project(projectJsonPath());
         if (!project.exists() || project.lastModified() < m_match->lineupsModified())
             applyLineups(lineups);
     }
@@ -650,7 +656,7 @@ void AppController::markDirty()
     }
 }
 
-QString AppController::projectDir() const
+QString AppController::legacyProjectDir() const
 {
     if (m_videoPath.isEmpty())
         return {};
@@ -658,20 +664,81 @@ QString AppController::projectDir() const
     return info.dir().filePath(info.completeBaseName() + QStringLiteral("_project"));
 }
 
+QString AppController::projectJsonPath() const
+{
+    const QString dir = m_match->matchDir();
+    return dir.isEmpty() ? QString() : dir + QStringLiteral("/project.json");
+}
+
+QString AppController::videoKey() const
+{
+    return QString::number(m_match->videoId());
+}
+
+QString AppController::playerSamplesDir() const
+{
+    const QString dir = m_match->matchDir();
+    return dir.isEmpty() ? QString()
+                         : dir + QStringLiteral("/player_samples") + m_match->videoSuffix();
+}
+
+QString AppController::exportHomographiesPath() const
+{
+    const QString dir = m_match->matchDir();
+    return dir.isEmpty() ? QString()
+                         : dir + QStringLiteral("/homographies") + m_match->videoSuffix()
+                               + QStringLiteral(".json");
+}
+
+QString AppController::greenMaskDir() const
+{
+    const QString dir = m_match->matchDir();
+    return dir.isEmpty() ? QString()
+                         : dir + QStringLiteral("/green_mask") + m_match->videoSuffix();
+}
+
+QString AppController::staticMaskDir() const
+{
+    const QString dir = m_match->matchDir();
+    return dir.isEmpty() ? QString()
+                         : dir + QStringLiteral("/static_mask") + m_match->videoSuffix();
+}
+
+void AppController::applyMatchJson(const QJsonObject &m)
+{
+    m_metadata->fromJson(m[QStringLiteral("metadata")].toObject());
+    m_homeRoster->fromJson(m[QStringLiteral("homeRoster")].toArray());
+    m_awayRoster->fromJson(m[QStringLiteral("awayRoster")].toArray());
+}
+
+void AppController::applyVideoJson(const QJsonObject &v)
+{
+    m_tags->fromJson(v[QStringLiteral("tags")].toArray());
+    m_homography->fromJson(v[QStringLiteral("homography")].toObject());
+}
+
 void AppController::loadProjectIfPresent()
 {
-    const QString dir = projectDir();
-    if (dir.isEmpty())
-        return;
-    QFile file(QDir(dir).filePath(QStringLiteral("project.json")));
-    if (!file.open(QIODevice::ReadOnly))
-        return;
-    const QJsonObject root = QJsonDocument::fromJson(file.readAll()).object();
-    m_metadata->fromJson(root[QStringLiteral("metadata")].toObject());
-    m_homeRoster->fromJson(root[QStringLiteral("homeRoster")].toArray());
-    m_awayRoster->fromJson(root[QStringLiteral("awayRoster")].toArray());
-    m_tags->fromJson(root[QStringLiteral("tags")].toArray());
-    m_homography->fromJson(root[QStringLiteral("homography")].toObject());
+    // Bring a legacy <video>_project into the consolidated store first, so the
+    // read below finds this video's section.
+    migrateLegacyProjectIfNeeded();
+    // Give pre-suffix mask dirs the current video's suffix, so old matches
+    // keep showing their masks after the naming change.
+    migrateMaskDirsIfNeeded();
+
+    const QString jsonPath = projectJsonPath();
+    if (!jsonPath.isEmpty()) {
+        QFile file(jsonPath);
+        if (file.open(QIODevice::ReadOnly)) {
+            const QJsonObject root = QJsonDocument::fromJson(file.readAll()).object();
+            file.close();
+            applyMatchJson(root[QStringLiteral("match")].toObject());
+            const QJsonObject videos = root[QStringLiteral("videos")].toObject();
+            if (videos.contains(videoKey()))
+                applyVideoJson(videos[videoKey()].toObject());
+        }
+    }
+
     // Attach a previously computed dense propagation track, if any.
     m_homography->clearPropagation();
     const QString dense = denseTrackPath();
@@ -682,26 +749,152 @@ void AppController::loadProjectIfPresent()
     emit dirtyChanged();
 }
 
+void AppController::migrateMaskDirsIfNeeded()
+{
+    const QString base = m_match->matchDir();
+    const QString suffix = m_match->videoSuffix();
+    if (base.isEmpty() || suffix.isEmpty())
+        return;   // no suffix (unknown video id) → leave the flat dirs as-is
+
+    // Pre-suffix layout had a single green_mask/ and static_mask/ per match.
+    // Adopt them for the current video if it has no suffixed dir of its own.
+    for (const char *kind : {"green_mask", "static_mask"}) {
+        const QString flat = base + QLatin1Char('/') + QLatin1String(kind);
+        const QString suffixed = flat + suffix;
+        if (QDir(flat).exists() && !QDir(suffixed).exists())
+            QDir().rename(flat, suffixed);
+    }
+}
+
+void AppController::migrateLegacyProjectIfNeeded()
+{
+    const QString jsonPath = projectJsonPath();
+    const QString ldir = legacyProjectDir();
+    if (jsonPath.isEmpty() || ldir.isEmpty())
+        return;
+
+    // Skip if this video already lives in the consolidated store.
+    QJsonObject root;
+    {
+        QFile f(jsonPath);
+        if (f.open(QIODevice::ReadOnly)) {
+            root = QJsonDocument::fromJson(f.readAll()).object();
+            f.close();
+        }
+    }
+    if (root[QStringLiteral("videos")].toObject().contains(videoKey()))
+        return;
+
+    // Nothing to migrate if there is no legacy project.json.
+    QJsonObject legacy;
+    {
+        QFile f(QDir(ldir).filePath(QStringLiteral("project.json")));
+        if (!f.open(QIODevice::ReadOnly))
+            return;
+        legacy = QJsonDocument::fromJson(f.readAll()).object();
+        f.close();
+    }
+
+    QDir().mkpath(m_match->matchDir());
+
+    // Shared match-level data (only seed if not already present).
+    QJsonObject matchObj = root[QStringLiteral("match")].toObject();
+    if (!matchObj.contains(QStringLiteral("metadata")))
+        matchObj[QStringLiteral("metadata")] = legacy[QStringLiteral("metadata")];
+    if (!matchObj.contains(QStringLiteral("homeRoster")))
+        matchObj[QStringLiteral("homeRoster")] = legacy[QStringLiteral("homeRoster")];
+    if (!matchObj.contains(QStringLiteral("awayRoster")))
+        matchObj[QStringLiteral("awayRoster")] = legacy[QStringLiteral("awayRoster")];
+    root[QStringLiteral("match")] = matchObj;
+
+    // Per-video section.
+    QJsonObject videos = root[QStringLiteral("videos")].toObject();
+    QJsonObject vid;
+    vid[QStringLiteral("id")]         = m_match->videoId();
+    vid[QStringLiteral("path")]       = m_videoPath;
+    vid[QStringLiteral("role")]       = m_match->videoRole();
+    vid[QStringLiteral("segment")]    = m_match->videoSegment();
+    vid[QStringLiteral("tags")]       = legacy[QStringLiteral("tags")];
+    vid[QStringLiteral("homography")] = legacy[QStringLiteral("homography")];
+    videos[videoKey()] = vid;
+    root[QStringLiteral("videos")] = videos;
+
+    QFile out(jsonPath);
+    if (out.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+        out.write(QJsonDocument(root).toJson(QJsonDocument::Indented));
+        out.close();
+    }
+
+    // Copy per-video artifact files to their suffixed locations (non-destructive).
+    auto copyTo = [](const QString &src, const QString &dst) {
+        if (!dst.isEmpty() && QFile::exists(src) && !QFile::exists(dst))
+            QFile::copy(src, dst);
+    };
+    copyTo(QDir(ldir).filePath(QStringLiteral("homography_dense.bin")), denseTrackPath());
+    copyTo(QDir(ldir).filePath(QStringLiteral("shots.json")), shotsPath());
+
+    // Player samples: json + the thumbnails folder.
+    const QString psDst = playerSamplesDir();
+    if (!psDst.isEmpty()) {
+        QDir().mkpath(psDst + QStringLiteral("/player_samples"));
+        copyTo(QDir(ldir).filePath(QStringLiteral("player_samples.json")),
+               psDst + QStringLiteral("/player_samples.json"));
+        const QDir thumbs(QDir(ldir).filePath(QStringLiteral("player_samples")));
+        if (thumbs.exists())
+            for (const QFileInfo &fi : thumbs.entryInfoList(QDir::Files))
+                copyTo(fi.absoluteFilePath(),
+                       psDst + QStringLiteral("/player_samples/") + fi.fileName());
+    }
+
+    // Set the legacy folder aside so it is not migrated again (recoverable).
+    const QString migrated = ldir + QStringLiteral(".migrated");
+    if (!QDir(migrated).exists())
+        QDir().rename(ldir, migrated);
+}
+
 bool AppController::saveProject()
 {
-    const QString dirPath = projectDir();
-    if (dirPath.isEmpty()) {
+    const QString matchDir = m_match->matchDir();
+    if (matchDir.isEmpty()) {
         m_lastError = QStringLiteral("Open a video before saving the project");
         emit errorChanged();
         return false;
     }
-    QDir().mkpath(dirPath);
-    const QDir dir(dirPath);
+    QDir().mkpath(matchDir);
+    const QDir dir(matchDir);
+    const QString suffix = m_match->videoSuffix();
 
+    // One project.json per match: merge into the existing file so the other
+    // videos' sections (and any match-level data) are preserved.
     QJsonObject root;
-    root[QStringLiteral("video")]      = m_videoPath;
-    root[QStringLiteral("metadata")]   = m_metadata->toJson();
-    root[QStringLiteral("homeRoster")] = m_homeRoster->toJson();
-    root[QStringLiteral("awayRoster")] = m_awayRoster->toJson();
-    root[QStringLiteral("tags")]       = m_tags->toJson();
-    root[QStringLiteral("homography")] = m_homography->toJson();
+    {
+        QFile in(projectJsonPath());
+        if (in.open(QIODevice::ReadOnly)) {
+            root = QJsonDocument::fromJson(in.readAll()).object();
+            in.close();
+        }
+    }
 
-    QFile jsonFile(dir.filePath(QStringLiteral("project.json")));
+    // Shared match-level data.
+    QJsonObject matchObj = root[QStringLiteral("match")].toObject();
+    matchObj[QStringLiteral("metadata")]   = m_metadata->toJson();
+    matchObj[QStringLiteral("homeRoster")] = m_homeRoster->toJson();
+    matchObj[QStringLiteral("awayRoster")] = m_awayRoster->toJson();
+    root[QStringLiteral("match")] = matchObj;
+
+    // This video's section.
+    QJsonObject videos = root[QStringLiteral("videos")].toObject();
+    QJsonObject vid = videos[videoKey()].toObject();
+    vid[QStringLiteral("id")]         = m_match->videoId();
+    vid[QStringLiteral("path")]       = m_videoPath;
+    vid[QStringLiteral("role")]       = m_match->videoRole();
+    vid[QStringLiteral("segment")]    = m_match->videoSegment();
+    vid[QStringLiteral("tags")]       = m_tags->toJson();
+    vid[QStringLiteral("homography")] = m_homography->toJson();
+    videos[videoKey()] = vid;
+    root[QStringLiteral("videos")] = videos;
+
+    QFile jsonFile(projectJsonPath());
     if (!jsonFile.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
         m_lastError = QStringLiteral("Cannot write %1").arg(jsonFile.fileName());
         emit errorChanged();
@@ -710,8 +903,8 @@ bool AppController::saveProject()
     jsonFile.write(QJsonDocument(root).toJson(QJsonDocument::Indented));
     jsonFile.close();
 
-    // Flat CSV exports for downstream analysis.
-    QFile tagsCsv(dir.filePath(QStringLiteral("tags.csv")));
+    // Flat CSV exports for downstream analysis (per video).
+    QFile tagsCsv(dir.filePath(QStringLiteral("tags") + suffix + QStringLiteral(".csv")));
     if (tagsCsv.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
         QTextStream out(&tagsCsv);
         out << "frame,timecode,team,player_number,player_name,x,y,pitch_x,pitch_y\n";
@@ -728,7 +921,7 @@ bool AppController::saveProject()
         }
     }
 
-    QFile tracksCsv(dir.filePath(QStringLiteral("tracks.csv")));
+    QFile tracksCsv(dir.filePath(QStringLiteral("tracks") + suffix + QStringLiteral(".csv")));
     if (tracksCsv.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
         QTextStream out(&tracksCsv);
         out << "track_id,frames_tracked,avg_conf,status\n";
@@ -759,13 +952,16 @@ void AppController::deleteProject()
     if (m_homoWorker && m_homoWorker->isRunning()) { m_homoWorker->requestStop(); m_homoWorker->wait(3000); }
     closeSecondary();
 
-    // Remove the per-video project folder (project.json, tags/tracks csv,
-    // shots.json, homography_dense.bin) captured before the path is cleared.
-    const QString pdir = projectDir();
+    // The consolidated project + artifacts live in the match dir, removed by
+    // m_match->deleteProject() below. Also clean up any legacy <video>_project
+    // folder (and its .migrated backup) left over from before consolidation.
+    const QString pdir = legacyProjectDir();
     if (!pdir.isEmpty()) {
-        QDir d(pdir);
-        if (d.exists())
-            d.removeRecursively();
+        for (const QString &d : { pdir, pdir + QStringLiteral(".migrated") }) {
+            QDir dd(d);
+            if (dd.exists())
+                dd.removeRecursively();
+        }
     }
 
     // Remove the match artifacts + games.json entry and reset match state.
@@ -833,12 +1029,23 @@ void AppController::capturePlayerSample(int role, double vx, double vy,
                          QStringLiteral("player_samples/") + fname);
 }
 
+void AppController::captureFullFrameSample(int role)
+{
+    if (!m_videoLoaded || m_lastFrame.isNull()) {
+        m_lastError = QStringLiteral("Abre un video antes de tomar muestras");
+        emit errorChanged();
+        return;
+    }
+    capturePlayerSample(role, 0, 0, m_lastFrame.width(), m_lastFrame.height());
+}
+
 QString AppController::denseTrackPath() const
 {
-    const QString dir = projectDir();
+    const QString dir = m_match->matchDir();
     if (dir.isEmpty())
         return {};
-    return QDir(dir).filePath(QStringLiteral("homography_dense.bin"));
+    return dir + QStringLiteral("/homography_dense") + m_match->videoSuffix()
+           + QStringLiteral(".bin");
 }
 
 void AppController::propagateHomography()
@@ -867,7 +1074,7 @@ void AppController::propagateHomography()
         wkfs.append(wk);
     }
 
-    QDir().mkpath(projectDir());
+    QDir().mkpath(m_match->matchDir());
     const QString outPath = denseTrackPath();
 
     // Per-frame player boxes (full-res px) over the keyframe span, from the
@@ -972,9 +1179,9 @@ QString AppController::exportHomographies()
         emit errorChanged();
         return {};
     }
-    const QString dirPath = projectDir();
+    const QString dirPath = m_match->matchDir();
     if (dirPath.isEmpty()) {
-        m_lastError = QStringLiteral("No project directory for this video");
+        m_lastError = QStringLiteral("No match directory for this video");
         emit errorChanged();
         return {};
     }
@@ -1008,7 +1215,7 @@ QString AppController::exportHomographies()
         "meters (105x68). Its inverse maps pitch -> image.");
     root[QStringLiteral("frames")] = frames;
 
-    const QString outPath = QDir(dirPath).filePath(QStringLiteral("homographies.json"));
+    const QString outPath = exportHomographiesPath();
     QFile file(outPath);
     if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
         m_lastError = QStringLiteral("Cannot write %1").arg(outPath);
@@ -1024,10 +1231,10 @@ QString AppController::exportHomographies()
 
 QString AppController::shotsPath() const
 {
-    const QString dir = projectDir();
+    const QString dir = m_match->matchDir();
     if (dir.isEmpty())
         return {};
-    return QDir(dir).filePath(QStringLiteral("shots.json"));
+    return dir + QStringLiteral("/shots") + m_match->videoSuffix() + QStringLiteral(".json");
 }
 
 void AppController::loadShotsIfPresent()
@@ -1090,7 +1297,7 @@ void AppController::detectShots()
         end = m_match->matchEndFrame();
     }
 
-    QDir().mkpath(projectDir());
+    QDir().mkpath(m_match->matchDir());
     if (!m_shotWorker) {
         m_shotWorker = new ShotDetector(this);
         connect(m_shotWorker, &ShotDetector::progressChanged, this,
@@ -1160,14 +1367,14 @@ void AppController::previewGreenMask()
 
 void AppController::showStaticMask(int chunkNumber)
 {
-    const QString dir = m_match->matchDir();
+    const QString dir = staticMaskDir();
     if (dir.isEmpty()) {
         m_lastError = QStringLiteral("El video no pertenece a un proyecto");
         emit errorChanged();
         return;
     }
     const QString path = dir
-        + QStringLiteral("/static_mask/video_part_%1/mask.png")
+        + QStringLiteral("/video_part_%1/mask.png")
               .arg(chunkNumber, 3, 10, QLatin1Char('0'));
     const cv::Mat mask = cv::imread(path.toStdString(), cv::IMREAD_GRAYSCALE);
     if (mask.empty()) {
@@ -1185,10 +1392,9 @@ void AppController::showStaticMask(int chunkNumber)
 
 void AppController::showStaticUnion()
 {
-    const QString dir = m_match->matchDir();
+    const QString dir = staticMaskDir();
     cv::Mat u = dir.isEmpty() ? cv::Mat()
-        : MaskGenerator::unionStaticMasks(dir + QStringLiteral("/static_mask"),
-                                          m_homography->staticVoteFrac());
+        : MaskGenerator::unionStaticMasks(dir, m_homography->staticVoteFrac());
 
     // Canvas: the union's size if we have one, else the video frame size.
     const cv::Size sz = u.empty()
@@ -1229,20 +1435,20 @@ void AppController::chunkFrameAtCurrent(int &chunk, int &frameInChunk) const
 
 QString AppController::greenMaskPath(int chunk, int frameInChunk) const
 {
-    const QString dir = m_match->matchDir();
+    const QString dir = greenMaskDir();
     if (dir.isEmpty())
         return {};
-    return dir + QStringLiteral("/green_mask/video_part_%1/frame_%2.png")
+    return dir + QStringLiteral("/video_part_%1/frame_%2.png")
                      .arg(chunk, 3, 10, QLatin1Char('0'))
                      .arg(frameInChunk, 5, 10, QLatin1Char('0'));
 }
 
 QString AppController::staticMaskPath(int chunk) const
 {
-    const QString dir = m_match->matchDir();
+    const QString dir = staticMaskDir();
     if (dir.isEmpty())
         return {};
-    return dir + QStringLiteral("/static_mask/video_part_%1/mask.png")
+    return dir + QStringLiteral("/video_part_%1/mask.png")
                      .arg(chunk, 3, 10, QLatin1Char('0'));
 }
 
@@ -1329,7 +1535,7 @@ void AppController::startMaskGen(int kind)
     }
     m_maskWorker->configure(
         kind == 0 ? MaskGenerator::Kind::Green : MaskGenerator::Kind::Static,
-        chunksDir, {}, matchDir);
+        chunksDir, {}, matchDir, m_match->videoSuffix());
 
     m_maskGenRunning = true;
     m_maskGenProgress = 0.0;
@@ -1366,12 +1572,11 @@ void AppController::onMaskGenFinished(bool ok, const QString &error, int written
 QVariantMap AppController::maskSummary() const
 {
     QVariantMap m;
-    const QString dir = m_match->matchDir();
     const int chunks = m_match->chunkCount();
     m[QStringLiteral("chunks")] = chunks;
     int greenChunks = 0, staticChunks = 0, greenFrames = 0;
-    if (!dir.isEmpty()) {
-        const QDir gm(dir + QStringLiteral("/green_mask"));
+    if (!m_match->matchDir().isEmpty()) {
+        const QDir gm(greenMaskDir());
         if (gm.exists()) {
             const QStringList parts = gm.entryList({QStringLiteral("video_part_*")},
                                                    QDir::Dirs | QDir::NoDotAndDotDot);
@@ -1381,7 +1586,7 @@ QVariantMap AppController::maskSummary() const
                                    .entryList({QStringLiteral("frame_*.png")}, QDir::Files)
                                    .size();
         }
-        const QDir sm(dir + QStringLiteral("/static_mask"));
+        const QDir sm(staticMaskDir());
         if (sm.exists())
             staticChunks = sm.entryList({QStringLiteral("video_part_*")},
                                         QDir::Dirs | QDir::NoDotAndDotDot).size();
@@ -1394,11 +1599,11 @@ QVariantMap AppController::maskSummary() const
 
 QImage AppController::aggregatedStaticMask() const
 {
-    const QString dir = m_match->matchDir();
+    const QString dir = staticMaskDir();
     if (dir.isEmpty())
         return {};
     const cv::Mat out = MaskGenerator::unionStaticMasks(
-        dir + QStringLiteral("/static_mask"), m_homography->staticVoteFrac());
+        dir, m_homography->staticVoteFrac());
     if (out.empty())
         return {};
     QImage img(out.cols, out.rows, QImage::Format_Grayscale8);

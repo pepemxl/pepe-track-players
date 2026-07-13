@@ -21,6 +21,7 @@ class MatchManager;
 class HomographyWorker;
 class MaskGenerator;
 class PlayerSamples;
+class QJsonObject;
 
 // Facade the QML layer talks to. Owns the video worker, the models and
 // the managers; forwards frames into the image provider.
@@ -188,6 +189,10 @@ public:
     Q_INVOKABLE void capturePlayerSample(int role, double vx, double vy,
                                          double vw, double vh);
 
+    // Captures the whole current frame as a sample for a role — handy for
+    // line-up graphics, which usually fill the broadcast frame.
+    Q_INVOKABLE void captureFullFrameSample(int role);
+
     // Phase F2: run the inter-frame optical-flow propagation over the manual
     // keyframes and load the resulting dense per-frame homography track.
     Q_INVOKABLE void propagateHomography();
@@ -277,7 +282,23 @@ private:
     void markDirty();
     void loadProjectIfPresent();
     void applyLineups(const QVariantMap &lineups);
-    QString projectDir() const;
+    // Consolidated storage under the match dir. One project.json per match
+    // holds shared match data plus a per-video section keyed by video id;
+    // per-video artifacts carry the "_<NN>" video suffix.
+    QString projectJsonPath() const;      // match_<id>/project.json
+    QString videoKey() const;             // current video id, as a JSON key
+    QString playerSamplesDir() const;     // match_<id>/player_samples_<NN>
+    QString exportHomographiesPath() const;
+    QString greenMaskDir() const;         // match_<id>/green_mask_<NN>
+    QString staticMaskDir() const;        // match_<id>/static_mask_<NN>
+    QString legacyProjectDir() const;     // old <video>_project (pre-consolidation)
+    // One-shot import of a legacy <video>_project into the consolidated store.
+    void migrateLegacyProjectIfNeeded();
+    // One-shot rename of pre-suffix mask dirs (green_mask/static_mask) to the
+    // current video's suffixed names, so old matches keep their masks.
+    void migrateMaskDirsIfNeeded();
+    void applyMatchJson(const QJsonObject &m);
+    void applyVideoJson(const QJsonObject &v);
 
     void pushCommand(const QVariantMap &cmd);
     void applyCommand(const QVariantMap &cmd, bool isUndo);
