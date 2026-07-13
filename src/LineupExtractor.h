@@ -3,6 +3,7 @@
 
 #include <QThread>
 #include <QRect>
+#include <QRectF>
 #include <QString>
 #include <QVariantList>
 #include <QVariantMap>
@@ -27,6 +28,17 @@ public:
 
     explicit LineupExtractor(QObject *parent = nullptr);
     ~LineupExtractor() override;
+
+    // One OCR'd token: its text and bounding box normalised to [0,1] over the
+    // source image. Used to recover where each number/name sits on a graphic.
+    struct Word {
+        QString text;
+        QRectF  rect;   // normalised (0..1) box on the source image
+    };
+    // Runs the Windows OCR (scripts/ocr.ps1 -WithBoxes) over an image file and
+    // returns every recognised word with its normalised bounding box. Empty
+    // with *errorOut set on failure. Blocking; call off the UI thread.
+    static QVector<Word> ocrWords(const QString &imagePath, QString *errorOut = nullptr);
 
     // outDir: where the grabbed frames land. crop: optional view rect
     // applied before OCR (multi-view videos).

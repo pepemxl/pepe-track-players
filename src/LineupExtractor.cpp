@@ -77,6 +77,58 @@ QStringList LineupExtractor::ocrImage(const QString &scriptPath, const QString &
     return out.split(QRegularExpression(QStringLiteral("[\r\n]+")), Qt::SkipEmptyParts);
 }
 
+QVector<LineupExtractor::Word> LineupExtractor::ocrWords(const QString &imagePath,
+                                                         QString *errorOut)
+{
+    const QString scriptPath = resolveOcrScript();
+    if (scriptPath.isEmpty()) {
+        if (errorOut) *errorOut = QStringLiteral("scripts/ocr.ps1 not found");
+        return {};
+    }
+    QProcess proc;
+    proc.start(QStringLiteral("powershell.exe"),
+               { QStringLiteral("-NoProfile"), QStringLiteral("-ExecutionPolicy"),
+                 QStringLiteral("Bypass"), QStringLiteral("-File"), scriptPath,
+                 QStringLiteral("-ImagePath"), imagePath, QStringLiteral("-WithBoxes") });
+    if (!proc.waitForFinished(60000)) {
+        proc.kill();
+        if (errorOut) *errorOut = QStringLiteral("OCR timed out");
+        return {};
+    }
+    if (proc.exitCode() != 0) {
+        if (errorOut)
+            *errorOut = QStringLiteral("OCR failed: %1")
+                            .arg(QString::fromLocal8Bit(proc.readAllStandardError()).left(200));
+        return {};
+    }
+
+    const QStringList lines =
+        QString::fromLocal8Bit(proc.readAllStandardOutput())
+            .split(QRegularExpression(QStringLiteral("[\r\n]+")), Qt::SkipEmptyParts);
+
+    double W = 0, H = 0;
+    QVector<Word> words;
+    for (const QString &line : lines) {
+        const QStringList parts = line.split(QLatin1Char('\t'));
+        if (line.startsWith(QLatin1String("#SIZE"))) {
+            if (parts.size() >= 3) { W = parts.at(1).toDouble(); H = parts.at(2).toDouble(); }
+            continue;
+        }
+        if (parts.size() < 5 || W <= 0 || H <= 0)
+            continue;
+        const double x = parts.at(0).toDouble();
+        const double y = parts.at(1).toDouble();
+        const double w = parts.at(2).toDouble();
+        const double h = parts.at(3).toDouble();
+        // Text is the remainder (a token never contains a tab, but be safe).
+        const QString text = QStringList(parts.mid(4)).join(QLatin1Char('\t')).trimmed();
+        if (text.isEmpty())
+            continue;
+        words.append({ text, QRectF(x / W, y / H, w / W, h / H) });
+    }
+    return words;
+}
+
 void LineupExtractor::parsePlayers(const QStringList &lines, QVariantList *players)
 {
     // Numbered rows like "10 MESSI", "#7 De Paul", or with a captain /

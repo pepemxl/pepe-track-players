@@ -21,6 +21,7 @@ class MatchManager;
 class HomographyWorker;
 class MaskGenerator;
 class PlayerSamples;
+class LineupPositionExtractor;
 class QJsonObject;
 
 // Facade the QML layer talks to. Owns the video worker, the models and
@@ -78,6 +79,12 @@ class AppController : public QObject
     Q_PROPERTY(QObject *tracksModel READ tracksModelObj CONSTANT)
     Q_PROPERTY(QObject *match READ matchObj CONSTANT)
     Q_PROPERTY(QObject *playerSamples READ playerSamplesObj CONSTANT)
+
+    // Line-up positions (Players tab): OCR of the captured line-up graphics.
+    // lineupPositions = { teamA: [{number,x,y,w,h}...], teamB: [...] }.
+    Q_PROPERTY(QVariantMap lineupPositions READ lineupPositions NOTIFY lineupPositionsChanged)
+    Q_PROPERTY(bool lineupOcrRunning READ lineupOcrRunning NOTIFY lineupPositionsChanged)
+    Q_PROPERTY(QString lineupOcrLabel READ lineupOcrLabel NOTIFY lineupPositionsChanged)
 
     // Secondary player (camera-sync section): a second project video
     // playing side by side with the main one.
@@ -193,6 +200,13 @@ public:
     // line-up graphics, which usually fill the broadcast frame.
     Q_INVOKABLE void captureFullFrameSample(int role);
 
+    // OCRs the captured line-up graphics (team_a/b_lineup samples) to pull out
+    // each shirt number and its position on the graphic. Runs off-thread;
+    // result lands in lineupPositions and persists per video.
+    Q_INVOKABLE void extractLineupPositions();
+    Q_INVOKABLE void cancelLineupPositions();
+    Q_INVOKABLE void clearLineupPositions();
+
     // Phase F2: run the inter-frame optical-flow propagation over the manual
     // keyframes and load the resulting dense per-frame homography track.
     Q_INVOKABLE void propagateHomography();
@@ -231,6 +245,11 @@ public:
     double maskGenProgress() const { return m_maskGenProgress; }
     QString maskGenLabel() const { return m_maskGenLabel; }
     QString maskGenKind() const { return m_maskGenKind; }
+
+    // ---- Line-up positions (Players tab) ----------------------------------
+    QVariantMap lineupPositions() const { return m_lineupPositions; }
+    bool lineupOcrRunning() const { return m_lineupOcrRunning; }
+    QString lineupOcrLabel() const { return m_lineupOcrLabel; }
 
     // Live preview of the grass mask for the current frame.
     Q_INVOKABLE void previewGreenMask();
@@ -275,6 +294,7 @@ signals:
     void solverBackendChanged();
     void maskChanged();
     void maskGenChanged();
+    void lineupPositionsChanged();
 
 private:
     void onFrameReady(const QImage &frame, int frameIndex, double posSec);
@@ -291,6 +311,7 @@ private:
     QString exportHomographiesPath() const;
     QString greenMaskDir() const;         // match_<id>/green_mask_<NN>
     QString staticMaskDir() const;        // match_<id>/static_mask_<NN>
+    QString lineupPositionsPath() const;  // match_<id>/lineup_positions_<NN>.json
     QString legacyProjectDir() const;     // old <video>_project (pre-consolidation)
     // One-shot import of a legacy <video>_project into the consolidated store.
     void migrateLegacyProjectIfNeeded();
@@ -314,6 +335,7 @@ private:
 
     void startMaskGen(int kind);   // 0 = green, 1 = static
     void onMaskGenFinished(bool ok, const QString &error, int written);
+    void onLineupPositionsFinished(bool ok, const QString &error, const QVariantMap &result);
     void publishMask(const class QImage &overlay, const QString &info);
     // Maps the current playback second to the chunk number and the frame index
     // within that chunk (10 fps chunks of 600 frames), as the tracking uses.
@@ -341,6 +363,7 @@ private:
     HomographyWorker  *m_homoWorker{nullptr};
     ShotDetector      *m_shotWorker{nullptr};
     MaskGenerator     *m_maskWorker{nullptr};
+    LineupPositionExtractor *m_lineupPosWorker{nullptr};
 
     bool    m_videoLoaded{false};
     QString m_videoPath;
@@ -375,6 +398,10 @@ private:
     double  m_maskGenProgress{0.0};
     QString m_maskGenLabel;
     QString m_maskGenKind;
+
+    QVariantMap m_lineupPositions;
+    bool    m_lineupOcrRunning{false};
+    QString m_lineupOcrLabel;
 
     bool    m_secLoaded{false};
     QString m_secVideoName;

@@ -324,20 +324,79 @@ Item {
                         text: "Grab the broadcast line-up graphic for each team "
                             + "(usually one or two frames per team). \"Grab frame\" "
                             + "saves the whole frame; \"Crop\" lets you drag a box. "
-                            + "These give each player's position, to help infer who "
+                            + "Then run OCR to read each shirt number and where it "
+                            + "sits on the graphic — that position helps infer who "
                             + "is who by where they stand on the pitch."
                         color: Theme.textDim
                         font { family: Theme.fontUi; pixelSize: 12 }
                     }
 
+                    // Run OCR over the captured line-up graphics.
+                    Row {
+                        width: parent.width
+                        spacing: 8
+                        readonly property bool anyImages:
+                            view.allSamples.some(s => s.role === 6 || s.role === 7)
+
+                        Rectangle {
+                            width: parent.width - clearBtn.width - 8; height: 34; radius: 8
+                            color: App.lineupOcrRunning ? Theme.surfaceHi : Theme.green
+                            opacity: (parent.anyImages && !App.lineupOcrRunning) ? 1 : 0.5
+                            Text {
+                                anchors.centerIn: parent
+                                text: App.lineupOcrRunning
+                                    ? (App.lineupOcrLabel || "OCR…")
+                                    : "Extract positions (OCR)"
+                                color: App.lineupOcrRunning ? Theme.text : "#10231a"
+                                font { family: Theme.fontUi; pixelSize: 12; weight: Font.DemiBold }
+                            }
+                            MouseArea {
+                                anchors.fill: parent
+                                enabled: parent.parent.anyImages && !App.lineupOcrRunning
+                                cursorShape: Qt.PointingHandCursor
+                                onClicked: App.extractLineupPositions()
+                            }
+                        }
+                        Rectangle {
+                            id: clearBtn
+                            width: 64; height: 34; radius: 8
+                            color: Theme.surfaceHi
+                            border.color: Theme.border2; border.width: 1
+                            Text {
+                                anchors.centerIn: parent; text: "Clear"
+                                color: Theme.text
+                                font { family: Theme.fontUi; pixelSize: 12 }
+                            }
+                            MouseArea {
+                                anchors.fill: parent
+                                cursorShape: Qt.PointingHandCursor
+                                onClicked: App.clearLineupPositions()
+                            }
+                        }
+                    }
+                    // OCR status / result summary.
+                    Text {
+                        width: parent.width
+                        visible: App.lineupOcrLabel.length > 0 && !App.lineupOcrRunning
+                        wrapMode: Text.WordWrap
+                        text: App.lineupOcrLabel
+                        color: Theme.textDim
+                        font { family: Theme.fontMono; pixelSize: 11 }
+                    }
+
                     Repeater {
                         model: view.lineupRoles
                         delegate: Rectangle {
+                            id: lupCard
                             required property var modelData
                             readonly property int roleIndex: modelData.i
                             readonly property var mine:
                                 view.allSamples.filter(s => s.role === roleIndex)
                             readonly property bool active: view.captureRole === roleIndex
+                            // OCR'd shirt-number positions for this team.
+                            readonly property var positions: roleIndex === 6
+                                ? (App.lineupPositions.teamA || [])
+                                : (App.lineupPositions.teamB || [])
 
                             width: panel.width
                             implicitHeight: lrows.height + 20
@@ -468,6 +527,51 @@ Item {
                                                     hoverEnabled: true
                                                     cursorShape: Qt.PointingHandCursor
                                                     onClicked: App.playerSamples.remove(modelData.id)
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+
+                                // Formation map: OCR'd shirt numbers placed at
+                                // their position on the graphic (normalised).
+                                Column {
+                                    width: parent.width
+                                    spacing: 5
+                                    visible: lupCard.positions.length > 0
+                                    Text {
+                                        text: lupCard.positions.length + " position(s)"
+                                        color: Theme.textDim
+                                        font { family: Theme.fontUi; pixelSize: 11 }
+                                    }
+                                    Rectangle {
+                                        id: pitchBox
+                                        width: parent.width
+                                        height: width * 9 / 16
+                                        radius: 6
+                                        color: "#12321f"
+                                        border.color: Theme.border2; border.width: 1
+                                        clip: true
+                                        // Centre line, for orientation.
+                                        Rectangle {
+                                            anchors.verticalCenter: parent.verticalCenter
+                                            width: parent.width; height: 1
+                                            color: "#204a30"
+                                        }
+                                        Repeater {
+                                            model: lupCard.positions
+                                            delegate: Rectangle {
+                                                required property var modelData
+                                                width: 20; height: 20; radius: 10
+                                                color: lupCard.modelData.color
+                                                x: modelData.x * pitchBox.width - width / 2
+                                                y: modelData.y * pitchBox.height - height / 2
+                                                border.color: "#10231a"; border.width: 1
+                                                Text {
+                                                    anchors.centerIn: parent
+                                                    text: modelData.number
+                                                    color: "#10231a"
+                                                    font { family: Theme.fontUi; pixelSize: 10; weight: Font.Bold }
                                                 }
                                             }
                                         }

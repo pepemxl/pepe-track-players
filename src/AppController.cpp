@@ -6,6 +6,7 @@
 #include "LineCalibrator.h"
 #include "HomographySolver.h"
 #include "ShotDetector.h"
+#include "LineupPositionExtractor.h"
 #include "MaskGenerator.h"
 #include "MatchMetadata.h"
 #include "RosterModel.h"
@@ -704,6 +705,14 @@ QString AppController::staticMaskDir() const
                          : dir + QStringLiteral("/static_mask") + m_match->videoSuffix();
 }
 
+QString AppController::lineupPositionsPath() const
+{
+    const QString dir = m_match->matchDir();
+    return dir.isEmpty() ? QString()
+                         : dir + QStringLiteral("/lineup_positions") + m_match->videoSuffix()
+                               + QStringLiteral(".json");
+}
+
 void AppController::applyMatchJson(const QJsonObject &m)
 {
     m_metadata->fromJson(m[QStringLiteral("metadata")].toObject());
@@ -745,6 +754,21 @@ void AppController::loadProjectIfPresent()
     if (!dense.isEmpty() && QFile::exists(dense))
         m_homography->loadDenseTrack(dense);
     loadShotsIfPresent();
+
+    // Previously extracted line-up positions, if any.
+    m_lineupPositions.clear();
+    m_lineupOcrLabel.clear();
+    const QString lpPath = lineupPositionsPath();
+    QFile lpFile(lpPath);
+    if (!lpPath.isEmpty() && lpFile.open(QIODevice::ReadOnly)) {
+        const QJsonObject o = QJsonDocument::fromJson(lpFile.readAll()).object();
+        m_lineupPositions[QStringLiteral("teamA")] =
+            o[QStringLiteral("teamA")].toArray().toVariantList();
+        m_lineupPositions[QStringLiteral("teamB")] =
+            o[QStringLiteral("teamB")].toArray().toVariantList();
+    }
+    emit lineupPositionsChanged();
+
     m_dirty = false;
     emit dirtyChanged();
 }
@@ -950,6 +974,8 @@ void AppController::deleteProject()
     if (m_shotWorker && m_shotWorker->isRunning()) { m_shotWorker->requestStop(); m_shotWorker->wait(3000); }
     if (m_maskWorker && m_maskWorker->isRunning()) { m_maskWorker->requestStop(); m_maskWorker->wait(3000); }
     if (m_homoWorker && m_homoWorker->isRunning()) { m_homoWorker->requestStop(); m_homoWorker->wait(3000); }
+    if (m_lineupPosWorker && m_lineupPosWorker->isRunning()) { m_lineupPosWorker->requestStop(); m_lineupPosWorker->wait(3000); }
+    clearLineupPositions();
     closeSecondary();
 
     // The consolidated project + artifacts live in the match dir, removed by
@@ -1037,6 +1063,97 @@ void AppController::captureFullFrameSample(int role)
         return;
     }
     capturePlayerSample(role, 0, 0, m_lastFrame.width(), m_lastFrame.height());
+}
+
+void AppController::extractLineupPositions()
+{
+    if (m_lineupPosWorker && m_lineupPosWorker->isRunning())
+        return;
+
+    // Absolute paths of the captured line-up graphics, tagged by team.
+    const QString base = m_playerSamples->baseDir();
+    QVector<LineupPositionExtractor::Job> jobs;
+    const int roles[2] = { PlayerSamples::TeamALineup, PlayerSamples::TeamBLineup };
+    for (int t = 0; t < 2; ++t) {
+        const QVariantList mine = m_playerSamples->forRole(roles[t]);
+        for (const QVariant &v : mine) {
+            const QString thumb = v.toMap().value(QStringLiteral("thumb")).toString();
+            if (!thumb.isEmpty() && !base.isEmpty())
+                jobs.append({ base + QLatin1Char('/') + thumb, t });
+        }
+    }
+    if (jobs.isEmpty()) {
+        m_lastError = QStringLiteral("Captura una imagen de alineación primero "
+                                     "(sección Team line-ups)");
+        emit errorChanged();
+        return;
+    }
+
+    if (!m_lineupPosWorker) {
+        m_lineupPosWorker = new LineupPositionExtractor(this);
+        connect(m_lineupPosWorker, &LineupPositionExtractor::progressChanged, this,
+                [this](double, const QString &label) {
+                    m_lineupOcrLabel = label;
+                    emit lineupPositionsChanged();
+                });
+        connect(m_lineupPosWorker, &LineupPositionExtractor::finishedExtraction, this,
+                &AppController::onLineupPositionsFinished);
+    }
+    m_lineupPosWorker->configure(jobs);
+    m_lineupOcrRunning = true;
+    m_lineupOcrLabel = QStringLiteral("OCR…");
+    emit lineupPositionsChanged();
+    m_lineupPosWorker->start();
+}
+
+void AppController::cancelLineupPositions()
+{
+    if (m_lineupPosWorker && m_lineupPosWorker->isRunning())
+        m_lineupPosWorker->requestStop();
+}
+
+void AppController::clearLineupPositions()
+{
+    m_lineupPositions.clear();
+    const QString path = lineupPositionsPath();
+    if (!path.isEmpty())
+        QFile::remove(path);
+    m_lineupOcrLabel.clear();
+    emit lineupPositionsChanged();
+}
+
+void AppController::onLineupPositionsFinished(bool ok, const QString &error,
+                                              const QVariantMap &result)
+{
+    m_lineupOcrRunning = false;
+    if (!ok) {
+        m_lineupOcrLabel = error;
+        emit lineupPositionsChanged();
+        if (!error.isEmpty() && error != QStringLiteral("cancelled")) {
+            m_lastError = error;
+            emit errorChanged();
+        }
+        return;
+    }
+
+    m_lineupPositions = result;
+    const int nA = result.value(QStringLiteral("teamA")).toList().size();
+    const int nB = result.value(QStringLiteral("teamB")).toList().size();
+    m_lineupOcrLabel = QStringLiteral("Positions: %1 + %2").arg(nA).arg(nB);
+
+    // Persist next to the other per-video artifacts.
+    const QString path = lineupPositionsPath();
+    if (!path.isEmpty()) {
+        QJsonObject root;
+        root[QStringLiteral("teamA")] =
+            QJsonArray::fromVariantList(result.value(QStringLiteral("teamA")).toList());
+        root[QStringLiteral("teamB")] =
+            QJsonArray::fromVariantList(result.value(QStringLiteral("teamB")).toList());
+        QFile f(path);
+        if (f.open(QIODevice::WriteOnly | QIODevice::Truncate))
+            f.write(QJsonDocument(root).toJson(QJsonDocument::Indented));
+    }
+    emit lineupPositionsChanged();
 }
 
 QString AppController::denseTrackPath() const

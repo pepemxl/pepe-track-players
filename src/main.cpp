@@ -4,6 +4,7 @@
 #include "HomographyWorker.h"
 #include "LineCalibrator.h"
 #include "ShotDetector.h"
+#include "LineupPositionExtractor.h"
 #include "MaskGenerator.h"
 #include "MatchManager.h"
 #include "TrackingManager.h"
@@ -992,6 +993,29 @@ static int runFlowStaticTest(const QString &videoPath, int frame, const QString 
     return onGraphic(cm) == 0 ? 0 : 1;
 }
 
+// Headless: OCR a captured line-up image and print each shirt number with its
+// normalised position on the graphic ("pepe --lineup-positions <image>").
+static int runLineupPositions(const QString &imagePath)
+{
+    QString err;
+    const QVariantList nums = LineupPositionExtractor::numbersFromImage(imagePath, &err);
+    if (nums.isEmpty() && !err.isEmpty()) {
+        std::fprintf(stderr, "error: %s\n", qPrintable(err));
+        return 1;
+    }
+    std::fprintf(stdout, "%s: %lld number(s)\n", qPrintable(imagePath),
+                 static_cast<long long>(nums.size()));
+    for (const QVariant &v : nums) {
+        const QVariantMap m = v.toMap();
+        std::fprintf(stdout, "  #%-2d  x=%.3f  y=%.3f\n",
+                     m.value(QStringLiteral("number")).toInt(),
+                     m.value(QStringLiteral("x")).toDouble(),
+                     m.value(QStringLiteral("y")).toDouble());
+    }
+    std::fflush(stdout);
+    return nums.isEmpty() ? 1 : 0;
+}
+
 int main(int argc, char *argv[])
 {
     QGuiApplication app(argc, argv);
@@ -1047,6 +1071,8 @@ int main(int argc, char *argv[])
             return runStaticUnion(args.at(2), args.at(3));
         if (args.size() >= 5 && args.at(1) == QLatin1String("--flow-static-test"))
             return runFlowStaticTest(args.at(2), args.at(3).toInt(), args.at(4));
+        if (args.size() >= 3 && args.at(1) == QLatin1String("--lineup-positions"))
+            return runLineupPositions(args.at(2));
     }
 
     // Basic style so QML can fully restyle the controls.
