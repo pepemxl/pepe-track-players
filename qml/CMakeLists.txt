@@ -29,6 +29,7 @@ qt_add_qml_module(pepetrack_qml
         FeaturesView.qml
         FeaturesPlayerView.qml
         FrameTransport.qml
+        FormationInput.qml
         StatCard.qml
         EditField.qml
 )

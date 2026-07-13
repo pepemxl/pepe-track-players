@@ -30,6 +30,9 @@ class MatchMetadata : public QObject
     META_PROP(date, Date)
     META_PROP(venue, Venue)
     META_PROP(referee, Referee)
+    // Starting tactical formation, "-"-joined integers (e.g. "4-1-3-2").
+    META_PROP(homeFormation, HomeFormation)
+    META_PROP(awayFormation, AwayFormation)
 
 public:
     explicit MatchMetadata(QObject *parent = nullptr);

@@ -24,6 +24,8 @@ QJsonObject MatchMetadata::toJson() const
     o[QStringLiteral("date")]        = m_date;
     o[QStringLiteral("venue")]       = m_venue;
     o[QStringLiteral("referee")]     = m_referee;
+    o[QStringLiteral("homeFormation")] = m_homeFormation;
+    o[QStringLiteral("awayFormation")] = m_awayFormation;
     return o;
 }
 
@@ -41,5 +43,7 @@ void MatchMetadata::fromJson(const QJsonObject &o)
     m_date        = s("date", m_date);
     m_venue       = s("venue", m_venue);
     m_referee     = s("referee", m_referee);
+    m_homeFormation = s("homeFormation", m_homeFormation);
+    m_awayFormation = s("awayFormation", m_awayFormation);
     emit changed();
 }

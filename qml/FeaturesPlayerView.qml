@@ -435,6 +435,31 @@ Item {
                                     }
                                 }
 
+                                // Starting formation, e.g. 4-1-3-2 (home) /
+                                // 4-2-3-1 (away). Match-level, kept in metadata.
+                                Row {
+                                    width: parent.width
+                                    spacing: 10
+                                    Text {
+                                        text: "Formation"
+                                        color: Theme.textDim
+                                        font { family: Theme.fontUi; pixelSize: 12 }
+                                        anchors.verticalCenter: parent.verticalCenter
+                                    }
+                                    FormationInput {
+                                        anchors.verticalCenter: parent.verticalCenter
+                                        value: roleIndex === 6
+                                            ? (App.metadata.homeFormation || "")
+                                            : (App.metadata.awayFormation || "")
+                                        onEdited: (v) => {
+                                            if (roleIndex === 6)
+                                                App.metadata.homeFormation = v
+                                            else
+                                                App.metadata.awayFormation = v
+                                        }
+                                    }
+                                }
+
                                 // Grab-frame / Crop actions.
                                 Row {
                                     width: parent.width

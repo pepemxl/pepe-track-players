@@ -59,6 +59,8 @@ set(SOURCES
     src/VideoOpsWorker.h
     src/LineupExtractor.cpp
     src/LineupExtractor.h
+    src/LineupPositionExtractor.cpp
+    src/LineupPositionExtractor.h
 )
 
 qt_add_executable(pepe_track_players WIN32 ${SOURCES})

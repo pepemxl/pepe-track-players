@@ -1,7 +1,11 @@
-# Windows built-in OCR (Windows.Media.Ocr) over a PNG/JPG.
-# Prints one recognized text line per output line.
+# Windows built-in OCR (Windows.Media.Ocr) over a PNG/JPG/BMP.
+# Default: prints one recognized text line per output line.
+# -WithBoxes: prints a "#SIZE\t<w>\t<h>" header (bitmap pixels) followed by one
+# word per line as "<x>\t<y>\t<w>\t<h>\t<text>" — the word's bounding box in the
+# same pixel space, used to recover each token's position on the image.
 param(
-    [Parameter(Mandatory = $true)][string]$ImagePath
+    [Parameter(Mandatory = $true)][string]$ImagePath,
+    [switch]$WithBoxes
 )
 
 Add-Type -AssemblyName System.Runtime.WindowsRuntime
@@ -35,4 +39,14 @@ if (-not $engine) {
 if (-not $engine) { Write-Error 'No OCR language available'; exit 1 }
 
 $result = Await ($engine.RecognizeAsync($bitmap)) ([Windows.Media.Ocr.OcrResult])
-foreach ($line in $result.Lines) { $line.Text }
+if ($WithBoxes) {
+    Write-Output ("#SIZE`t{0}`t{1}" -f $bitmap.PixelWidth, $bitmap.PixelHeight)
+    foreach ($line in $result.Lines) {
+        foreach ($word in $line.Words) {
+            $r = $word.BoundingRect
+            Write-Output ("{0}`t{1}`t{2}`t{3}`t{4}" -f $r.X, $r.Y, $r.Width, $r.Height, $word.Text)
+        }
+    }
+} else {
+    foreach ($line in $result.Lines) { $line.Text }
+}
